@@ -1,0 +1,46 @@
+# Build output
+dist/
+*.zip
+
+# Toolkit state directory (ledger, log, transaction evidence): always ignored. The directory
+# also carries its own self-ignoring .gitignore inside a target project.
+.codex-dsh-team-toolkit/
+
+# Local DSH/Codex scratch and runtime state must never be committed. These are directory
+# patterns only: no source file, skill or document lives under them.
+.dsh/
+artifacts/
+
+# Built binaries are produced by uninstaller/Build-Uninstaller.ps1 and are never committed
+uninstaller/*.exe
+uninstaller/bin/
+uninstaller/build-report.json
+
+# Local scratch
+*.tmp
+*.tmp.*
+*.bak
+
+# Logs, sessions and runtime data must never be committed
+*.log
+logs/
+sessions/
+node_modules/
+
+# Credentials and local settings (deny-by-default, defense in depth)
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+*.p12
+settings.yaml
+.credentials.yaml
+credentials.json
+
+# Editors / OS
+.vs/
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

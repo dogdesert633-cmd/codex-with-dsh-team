@@ -1,0 +1,181 @@
+{
+  "schema": "codex-dsh-team-toolkit/payload-inventory/v1",
+  "name": "codex-dsh-team-toolkit",
+  "description": "Toolkit-owned single source of truth for the payload. `files` is the managed INSTALL set (runtime only). `releaseDevelopmentPaths` is packaged into the release for transparency/auditability but is NEVER installed.",
+  "provenance": {
+    "inventoryRole": "This file is the only toolkit inventory and the single source of truth for the managed install set.",
+    "declaredAdditions": "runtime modules shipped by the current payload release (security.mjs, team-home.mjs, DshTeamCommon.ps1) and their references",
+    "noPayloadManifest": "There is no payload-side COPY_FILE_LIST.json anywhere in this toolkit: it is neither packaged, installed nor consulted, and no build step may treat such a file as an inventory.",
+    "publicBoundary": "No internal build/review source path is recorded here; the inventory describes only what this toolkit installs and packages."
+  },
+  "installRules": {
+    "installed": "runtime source, launchers, references, templates, assets, roles, profiles, agents metadata, package.json, package-lock.json (needed for npm ci)",
+    "neverInstalled": "payload test files, inventory/build metadata, credentials, ownership markers, runtime state, sessions, artifacts, node_modules",
+    "packagedOnlyNote": "releaseDevelopmentPaths ships inside the release package but is excluded from release-manifest.json files (the install set)"
+  },
+  "fileCount": 50,
+  "files": [
+    {
+      "path": ".agents/skills/codex-dsh-team/agents/openai.yaml"
+    },
+    {
+      "path": ".agents/skills/codex-dsh-team/assets/AGENTS_DSH_SECTION.md"
+    },
+    {
+      "path": ".agents/skills/codex-dsh-team/assets/metrics.json"
+    },
+    {
+      "path": ".agents/skills/codex-dsh-team/assets/REVIEW_CONTRACT.md"
+    },
+    {
+      "path": ".agents/skills/codex-dsh-team/assets/RUN_REPORT.md"
+    },
+    {
+      "path": ".agents/skills/codex-dsh-team/assets/WORK_PACKAGE.md"
+    },
+    {
+      "path": ".agents/skills/codex-dsh-team/profiles/default.yaml"
+    },
+    {
+      "path": ".agents/skills/codex-dsh-team/references/agent-lifecycle.md"
+    },
+    {
+      "path": ".agents/skills/codex-dsh-team/references/dsh-context-efficiency.md"
+    },
+    {
+      "path": ".agents/skills/codex-dsh-team/references/dsh-full-access-permissions.md"
+    },
+    {
+      "path": ".agents/skills/codex-dsh-team/references/dsh-recovery-and-fallback.md"
+    },
+    {
+      "path": ".agents/skills/codex-dsh-team/references/dsh-stop-and-return.md"
+    },
+    {
+      "path": ".agents/skills/codex-dsh-team/references/evidence-and-recovery.md"
+    },
+    {
+      "path": ".agents/skills/codex-dsh-team/references/model-validation-and-no-hash.md"
+    },
+    {
+      "path": ".agents/skills/codex-dsh-team/references/task-capability-routing.md"
+    },
+    {
+      "path": ".agents/skills/codex-dsh-team/references/team-routing.md"
+    },
+    {
+      "path": ".agents/skills/codex-dsh-team/references/team-task-scheduler.md"
+    },
+    {
+      "path": ".agents/skills/codex-dsh-team/roles/advisor.md"
+    },
+    {
+      "path": ".agents/skills/codex-dsh-team/roles/code_explorer.md"
+    },
+    {
+      "path": ".agents/skills/codex-dsh-team/roles/code_reviewer.md"
+    },
+    {
+      "path": ".agents/skills/codex-dsh-team/roles/coder.md"
+    },
+    {
+      "path": ".agents/skills/codex-dsh-team/roles/coordinator.md"
+    },
+    {
+      "path": ".agents/skills/codex-dsh-team/roles/progress_recorder.md"
+    },
+    {
+      "path": ".agents/skills/codex-dsh-team/roles/tester.md"
+    },
+    {
+      "path": ".agents/skills/codex-dsh-team/SKILL.md"
+    },
+    {
+      "path": ".agents/skills/mcp-to-dsh/.gitignore"
+    },
+    {
+      "path": ".agents/skills/mcp-to-dsh/agents/openai.yaml"
+    },
+    {
+      "path": ".agents/skills/mcp-to-dsh/package-lock.json"
+    },
+    {
+      "path": ".agents/skills/mcp-to-dsh/package.json"
+    },
+    {
+      "path": ".agents/skills/mcp-to-dsh/public/app.js"
+    },
+    {
+      "path": ".agents/skills/mcp-to-dsh/public/index.html"
+    },
+    {
+      "path": ".agents/skills/mcp-to-dsh/public/model-revision.js"
+    },
+    {
+      "path": ".agents/skills/mcp-to-dsh/public/styles.css"
+    },
+    {
+      "path": ".agents/skills/mcp-to-dsh/references/agent-adapter-contract.md"
+    },
+    {
+      "path": ".agents/skills/mcp-to-dsh/references/operations.md"
+    },
+    {
+      "path": ".agents/skills/mcp-to-dsh/scripts/dispatch_dsh_gui.ps1"
+    },
+    {
+      "path": ".agents/skills/mcp-to-dsh/scripts/DshTeamCommon.ps1"
+    },
+    {
+      "path": ".agents/skills/mcp-to-dsh/scripts/start_dsh_monitor.ps1"
+    },
+    {
+      "path": ".agents/skills/mcp-to-dsh/scripts/start_dsh_team.ps1"
+    },
+    {
+      "path": ".agents/skills/mcp-to-dsh/scripts/Sync-DshTeamConfig.ps1"
+    },
+    {
+      "path": ".agents/skills/mcp-to-dsh/SKILL.md"
+    },
+    {
+      "path": ".agents/skills/mcp-to-dsh/src/cli.mjs"
+    },
+    {
+      "path": ".agents/skills/mcp-to-dsh/src/model-settings.mjs"
+    },
+    {
+      "path": ".agents/skills/mcp-to-dsh/src/security.mjs"
+    },
+    {
+      "path": ".agents/skills/mcp-to-dsh/src/server.mjs"
+    },
+    {
+      "path": ".agents/skills/mcp-to-dsh/src/team-home.mjs"
+    },
+    {
+      "path": ".agents/skills/mcp-to-dsh/templates/DS_READY_WORK_PACKAGE.md"
+    },
+    {
+      "path": ".agents/skills/mcp-to-dsh/templates/DSH_REVIEW_CONTRACT.md"
+    },
+    {
+      "path": "start_dsh_team.cmd"
+    },
+    {
+      "path": "sync_dsh_team_config.cmd"
+    }
+  ],
+  "releaseDevelopmentPaths": [
+    ".agents/skills/mcp-to-dsh/test/config-sync.test.mjs",
+    ".agents/skills/mcp-to-dsh/test/generalization.test.mjs",
+    ".agents/skills/mcp-to-dsh/test/launcher-security.test.mjs",
+    ".agents/skills/mcp-to-dsh/test/model-settings.test.mjs",
+    ".agents/skills/mcp-to-dsh/test/redaction-e2e.test.mjs",
+    ".agents/skills/mcp-to-dsh/test/security.test.mjs",
+    ".agents/skills/mcp-to-dsh/test/server.test.mjs",
+    ".agents/skills/mcp-to-dsh/test/support/spawn-guard.mjs",
+    ".agents/skills/mcp-to-dsh/test/team-home.test.mjs",
+    ".agents/skills/mcp-to-dsh/test/teardown-guard.test.mjs"
+  ]
+}

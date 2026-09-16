@@ -1,0 +1,568 @@
+:root {
+  color-scheme: light dark;
+  --shell: light-dark(#f2f4f7, #101114);
+  --panel: light-dark(#ffffff, #191b20);
+  --raised: light-dark(#f8f9fb, #202329);
+  --text: light-dark(#181a1e, #f1f3f5);
+  --muted: light-dark(#686e78, #aab0bb);
+  --line: light-dark(#dde1e7, #343943);
+  --blue: light-dark(#2768ce, #76a9ff);
+  --blue-soft: light-dark(#eaf2ff, #172a49);
+  --green: light-dark(#137a4b, #58d99b);
+  --green-soft: light-dark(#e8f6ef, #173a2b);
+  --amber: light-dark(#946000, #f2bd58);
+  --amber-soft: light-dark(#fff4dc, #3b2d13);
+  --purple: light-dark(#6e50b4, #b79ced);
+  --purple-soft: light-dark(#f1edfb, #302442);
+  --red: light-dark(#b33535, #ff8989);
+  /* System font stacks only: no network font is ever loaded. The conversation uses a distinct
+     face per block type, mirroring how DSH presents its own stream. */
+  --font-ui: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", ui-serif, serif;
+  --font-mono: "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-family: var(--font-ui);
+  background: var(--shell);
+  color: var(--text);
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--shell); }
+button { font: inherit; }
+code, pre { font-family: var(--font-mono); }
+
+.app-shell { width: min(1320px, 100%); margin: 0 auto; padding: 10px 14px 14px; }
+
+/* --- 单条状态栏 -------------------------------------------------------------
+   品牌 + 视图切换 + Live/Agent/Task/更新时间摘要 + 默认模型控件 + 一键同步，全部一行；
+   之前独立的 5 张概览卡片被压缩成这里的文字摘要。 */
+.statusbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 7px 11px; background: var(--panel); border: 1px solid var(--line); border-radius: 11px; }
+.brand-mark { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 6px; color: light-dark(#fff, #10131a); background: var(--blue); font-size: 12px; font-weight: 600; }
+.brand-title { margin: 0; font-size: 13px; font-weight: 600; letter-spacing: .01em; }
+.status-metrics { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 0; margin-left: auto; color: var(--muted); font-size: 11px; }
+.status-metrics .metric strong { color: var(--text); font-weight: 600; }
+.metric-time { font-variant-numeric: tabular-nums; }
+.connection { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px; border-radius: 999px; color: var(--amber); background: var(--amber-soft); font-size: 11px; }
+.connection[data-state="connected"] { color: var(--green); background: var(--green-soft); }
+.connection[data-state="offline"] { color: var(--red); background: var(--raised); }
+.connection-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+/* 一键同步：清晰但不抢眼 —— 默认只是状态栏右端一枚幽灵按钮，四态靠颜色/文案表达。 */
+.sync-block { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 0; }
+.sync-button { min-height: 26px; padding: 3px 10px; color: var(--muted); background: transparent; border: 1px solid var(--line); border-radius: 8px; font-size: 11px; font-weight: 600; cursor: pointer; }
+.sync-button:hover:not(:disabled) { color: var(--text); border-color: var(--blue); }
+.sync-button[data-state="syncing"] { color: var(--blue); border-color: var(--blue); background: var(--blue-soft); }
+.sync-button[data-state="success"] { color: var(--green); border-color: var(--green); background: var(--green-soft); }
+.sync-button[data-state="error"] { color: var(--red); border-color: var(--red); background: var(--raised); }
+.sync-button[data-state="unavailable"], .sync-button:disabled { cursor: not-allowed; opacity: .55; }
+.sync-button:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.sync-message { max-width: 320px; color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+.sync-message:empty { display: none; }
+
+/* Workspace-scoped model override. 状态栏里的紧凑摘要 + 认证后才读取的安全 provider/model 投影。 */
+.model-control { position: relative; min-width: 0; }
+.model-control > summary { display: grid; gap: 0; min-width: 168px; padding: 3px 20px 3px 9px; list-style: none; color: var(--muted); background: var(--raised); border: 1px solid var(--line); border-radius: 8px; cursor: pointer; font-size: 9px; }
+.model-control > summary::-webkit-details-marker { display: none; }
+.model-control > summary::after { content: "⌄"; position: absolute; top: 6px; right: 8px; color: var(--muted); }
+.model-control[open] > summary { border-color: var(--blue); }
+.model-control > summary strong { max-width: 240px; overflow: hidden; color: var(--text); font-size: 10.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.model-form { position: absolute; z-index: 20; top: calc(100% + 8px); right: 0; display: grid; gap: 10px; width: min(380px, calc(100vw - 36px)); padding: 13px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 14px 34px light-dark(#1b243022, #0008); }
+.model-form label { display: grid; gap: 5px; color: var(--muted); font-size: 10px; }
+.model-form select { width: 100%; min-height: 34px; padding: 6px 30px 6px 9px; color: var(--text); background: var(--raised); border: 1px solid var(--line); border-radius: 8px; font: 11px var(--font-ui); }
+.model-form select:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+.model-provider-meta, .model-scope, .model-message { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
+.model-message[data-state="error"] { color: var(--red); }
+.model-message[data-state="ready"] { color: var(--green); }
+.model-actions { display: flex; justify-content: flex-end; gap: 7px; }
+.model-apply { color: light-dark(#fff, #10131a); background: var(--blue); border-color: var(--blue); }
+
+main { margin-top: 12px; }
+
+.section-heading { display: flex; align-items: end; justify-content: space-between; gap: 12px; margin-bottom: 9px; }
+.section-heading h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.section-heading p { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+
+/* Two-column workspace: compact Agent navigation on the left, one detail pane on the right. */
+.workspace { display: grid; grid-template-columns: minmax(210px, 268px) minmax(0, 1fr); gap: 12px; margin-top: 12px; align-items: start; }
+.sidebar { position: sticky; top: 12px; display: flex; flex-direction: column; gap: 7px; max-height: calc(100vh - 26px); padding: 9px 10px; overflow-y: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+.sidebar .section-heading { margin-bottom: 0; }
+.sidebar .section-heading p { font-size: 10.5px; }
+.sidebar-empty { margin: 0; padding: 8px 4px; color: var(--muted); font-size: 11px; text-align: center; }
+.sidebar-empty[hidden] { display: none; }
+.detail-pane { max-height: calc(100vh - 86px); min-height: 320px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.agent-detail[hidden] { display: none; }
+
+.agent-list { display: grid; gap: 6px; }
+/* 一个 Agent 一项：三行（状态+名称 / Model·Reasoning / 当前 Task·进度·耗时）。
+   不再有 Team、Session、Backend、Workspace、长标题或 chip 墙。 */
+.nav-item { overflow: hidden; background: var(--raised); border: 1px solid var(--line); border-radius: 9px; }
+.nav-item:hover { border-color: var(--blue); }
+.nav-item[data-selected="true"] { background: var(--blue-soft); border-color: var(--blue); box-shadow: inset 3px 0 0 var(--blue); }
+.nav-card { display: grid; gap: 2px; width: 100%; padding: 7px 9px; text-align: left; color: var(--text); background: transparent; border: 0; cursor: pointer; }
+.nav-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.nav-avatar { display: grid; place-items: center; flex: 0 0 auto; width: 17px; height: 17px; border-radius: 5px; color: var(--purple); background: var(--purple-soft); font-size: 9px; font-weight: 600; text-transform: uppercase; }
+.nav-name { flex: 1 1 auto; min-width: 0; overflow: hidden; font-size: 11.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.nav-card .state { flex: 0 0 auto; padding: 1px 6px; font-size: 9px; }
+.nav-model { color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nav-task { color: var(--muted); font-size: 10px; }
+.nav-task code { max-width: 120px; overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; }
+.nav-progress { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nav-elapsed { margin-left: auto; flex: 0 0 auto; color: var(--text); font-variant-numeric: tabular-nums; }
+
+/* --- 当前 Task 用时（侧栏 `.nav-timers` 第 4 行 / 详情卡头 `.agent-task-timer`） -------
+   “任务用时”只跟当前活动 Task 的当前 Attempt 走，与 `.nav-elapsed` / `[data-agent-elapsed]`
+   的 Agent 累计运行时间语义不同，因此两者并列但各自带可见标签，避免两个 mm:ss 互相冒充。
+   标签放在容器上，时间放在只含文本的最内层节点（`.task-elapsed` / `[data-task-elapsed]`），
+   ticker 每秒覆写 textContent 时不会擦掉中文标签；数字用等宽数字避免进位时宽度抖动。 */
+.nav-timers { flex-wrap: wrap; gap: 2px 8px; row-gap: 1px; color: var(--muted); font-size: 9.5px; }
+.nav-timers > * { flex: 0 0 auto; } /* 长 id 不得把计时挤成 0 宽 */
+.nav-task-timer, .agent-task-timer, .nav-timers .nav-elapsed { display: inline-flex; align-items: baseline; gap: 3px; min-width: 0; white-space: nowrap; }
+.task-elapsed,
+[data-task-elapsed],
+[data-agent-elapsed],
+.nav-task-timer > strong, .nav-task-timer > code,
+.agent-task-timer > strong, .agent-task-timer > code,
+.nav-timers .nav-elapsed > strong, .nav-timers .nav-elapsed > code { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+/* 只弱化两个计时的可见标签，数值仍保持可读。 */
+.nav-timers .nav-elapsed { color: var(--muted); }
+/* 状态语义与 app.js 的 `TASK_TIMER_STATES` 对齐：只有 live（活动 Task + 当前非 fenced Attempt）
+   才可能在计时，其中 phase=running 用既有 --blue 强调；live+assigned（已派发未开工）、
+   terminal（终态冻结）、unknown（开始时间不可解析）都保持 muted，不新增调色板变量。
+   同时兼容 explore 文档里 `data-task-timer-state="running"` 的旧命名。 */
+.nav-task-timer[data-task-timer-state="live"][data-task-timer-phase="running"],
+.agent-task-timer[data-task-timer-state="live"][data-task-timer-phase="running"],
+.nav-task-timer[data-task-timer-state="running"],
+.agent-task-timer[data-task-timer-state="running"] { color: var(--blue); }
+/* unknown 的 `--:--` 占位同样弱化，避免被误读成一个正在走的数字。 */
+.nav-task-timer[data-task-timer-state="unknown"] .task-elapsed,
+.agent-task-timer[data-task-timer-state="unknown"] .task-elapsed { color: var(--muted); }
+.nav-item[data-selected="true"] .nav-task-timer { color: var(--text); } /* 选中卡在 --blue-soft 底上保持可读 */
+
+/* assigned Task chips：右侧 Details 保留完整列表；侧栏（current/archive 共用）另有一份紧凑静态
+   汇总，其样式全部收在下方的 `.nav-item` 作用域内。 */
+.nav-tasks { display: grid; gap: 5px; padding: 0; }
+.nav-tasks-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 7px 0 0; color: var(--muted); font-size: 10px; }
+.nav-tasks-count { margin-left: auto; color: var(--text); font-weight: 600; }
+.nav-tasks-empty { margin: 7px 0 0; color: var(--muted); font-size: 10px; }
+.task-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.task-chip { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; padding: 2px 7px; color: var(--muted); background: var(--panel); border: 1px solid var(--line); border-radius: 999px; font-size: 10px; cursor: pointer; }
+.task-chip code { max-width: 96px; overflow: hidden; color: var(--text); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.task-chip-status { white-space: nowrap; }
+.task-chip[data-task-status="RUNNING"], .task-chip[data-task-status="ASSIGNED"] { color: var(--blue); border-color: var(--blue); }
+.task-chip[data-task-status="COMPLETED"] { color: var(--green); border-color: var(--green); }
+.task-chip[data-task-status="FAILED"], .task-chip[data-task-status="CANCELLED"] { color: var(--red); border-color: var(--red); }
+.task-chip[data-task-status="BLOCKED"] { color: var(--amber); border-color: var(--amber); }
+.task-chip[data-task-status="READY"] { color: var(--purple); border-color: var(--purple); }
+.task-chip[aria-pressed="true"] { color: var(--text); background: var(--blue-soft); border-color: var(--blue); box-shadow: inset 0 0 0 1px var(--blue); }
+.task-chip-more { align-self: center; color: var(--muted); font-size: 10px; }
+
+/* 侧栏（current / archive 共用）静态 Task 汇总：并行的 app.js Coder 在 `.nav-card` 之后插入既有
+   `.nav-tasks` / `.nav-tasks-head` / `.task-chips` / `.task-chip.task-chip-static` 结构。
+   这里只做紧凑化与作用域限定：`.nav-item` 作用域保证右侧 `.detail-tasks .nav-tasks` 外观不变；
+   不新增第二套状态色，不把 chip 放进 button，不新增交互态，也不引入卡片内部二级滚动。 */
+.nav-item .nav-tasks { display: grid; gap: 4px; min-width: 0; padding: 0 9px 7px; border-top: 1px solid var(--line); }
+.nav-item .nav-tasks-empty { margin: 6px 0 0; }
+.nav-item .nav-tasks-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; min-width: 0; margin: 6px 0 0; font-size: 9.5px; }
+/* 统计子项：数字加重、单位保持 muted，并用一条细竖线把相邻统计明确分开。 */
+.nav-item .nav-tasks-stat { display: inline-flex; align-items: baseline; gap: 3px; min-width: 0; color: var(--muted); font-variant-numeric: tabular-nums; }
+.nav-item .nav-tasks-stat + .nav-tasks-stat { padding-left: 6px; border-left: 1px solid var(--line); }
+.nav-item .nav-tasks-stat strong { color: var(--text); font-weight: 600; }
+.nav-item .task-chips { min-width: 0; }
+/* 比 Details 里的 chip 更紧凑；taskId 仍用省略号收束，不允许撑破卡片。 */
+.nav-item .task-chip { gap: 4px; min-width: 0; padding: 1px 6px; font-size: 9.5px; }
+.nav-item .task-chip code { max-width: 88px; font-size: 9.5px; }
+.nav-item .task-chip-status { font-size: 9px; }
+/* history-only 只用“虚线”这一处非颜色提示，状态色继续沿用既有 [data-task-status]。 */
+.nav-item .task-chip[data-participation="history"] { border-style: dashed; }
+.nav-item .task-chip-more { font-size: 9.5px; }
+
+/* Team 摘要保留功能但视觉降级：一行标题 + 细进度条，不再是醒目卡片。 */
+.team-summary-empty { margin: 0; color: var(--muted); font-size: 10px; }
+.team-summary-card { padding: 5px 0 6px; border-bottom: 1px solid var(--line); }
+.team-summary-card[data-team-status="AWAITING_USER_ACCEPTANCE"] .team-status { color: var(--amber); }
+.team-summary-card[data-team-status="DISSOLVED"] { opacity: .72; }
+.team-summary-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 7px; }
+.team-summary-head h3 { min-width: 0; margin: 0; overflow: hidden; color: var(--muted); font-size: 10.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.team-summary-card .team-progress { margin-top: 4px; }
+.team-summary-card .team-status { margin-left: auto; padding: 0 6px; color: var(--muted); background: transparent; border: 1px solid var(--line); font-size: 9px; }
+.team-summary-card .progress-seg { height: 3px; }
+.team-summary-legend { margin: 4px 0 0; color: var(--muted); font-size: 9.5px; overflow-wrap: anywhere; }
+
+.empty-state { display: grid; justify-items: center; padding: 30px 16px; text-align: center; background: transparent; border: 1px dashed var(--line); border-radius: 12px; }
+.empty-state[hidden] { display: none; }
+.empty-state h3 { margin: 8px 0 0; font-size: 13px; font-weight: 600; }
+.empty-state p { max-width: 460px; margin: 4px 0 0; color: var(--muted); font-size: 11px; }
+.empty-icon { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 9px; color: var(--blue); background: var(--blue-soft); font-size: 16px; }
+
+/* 右侧详情头：一行装下名称/状态、角色、model·reasoning、当前 task、turn 与耗时；
+   其余诊断字段都在下方默认折叠的 Details 里。 */
+.agent-card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+.agent-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 9px; padding: 9px 11px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+.agent-avatar { display: grid; place-items: center; flex: 0 0 auto; width: 20px; height: 20px; border-radius: 6px; color: var(--purple); background: var(--purple-soft); font-size: 10px; font-weight: 600; text-transform: uppercase; }
+.agent-name { margin: 0; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.agent-role { font-weight: 600; color: var(--text); }
+.agent-model { color: var(--text); font-size: 10.5px; font-variant-numeric: tabular-nums; }
+.agent-task code { color: var(--text); }
+.agent-head code { color: var(--text); }
+.agent-head .state, .agent-head .status { padding: 2px 7px; font-size: 10px; }
+.turns { display: grid; gap: 8px; padding: 6px 11px 12px; }
+.turns > .fold { margin: 0 0 2px; }
+/* Details 直接跟在详情头下面：与 .turns 共享左右内边距，不再另起一张卡。 */
+.agent-card > .fold { margin: 6px 11px 0; }
+.status { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 999px; font-size: 11px; color: var(--amber); background: var(--amber-soft); }
+.status[data-status="running"], .status[data-status="starting"] { color: var(--blue); background: var(--blue-soft); }
+.status[data-status="completed"] { color: var(--green); background: var(--green-soft); }
+.status[data-status="failed"], .status[data-status="cancelled"], .status[data-status="interrupted"] { color: var(--red); background: var(--raised); }
+/* An external Team member is idle between attempts; it needs its own neutral chip instead of a bare label. */
+.status[data-status="idle"] { color: var(--muted); background: var(--panel); }
+
+.action-button { min-height: 32px; padding: 6px 10px; color: var(--text); background: var(--raised); border: 1px solid var(--line); border-radius: 8px; font-size: 11px; cursor: pointer; }
+.action-button.danger { color: var(--red); }
+.action-button:disabled { cursor: not-allowed; opacity: .5; }
+.nav-card:focus-visible, .task-chip:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+.action-button:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+
+/* Agent 详情头的操作条（中止任务 / 退役 Agent）与短时结果反馈。
+   归档只读页不渲染该条；pending 按钮保留一个蓝色进行中态。 */
+.agent-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 9px; padding: 7px 11px; border-bottom: 1px solid var(--line); }
+.agent-actions-label { color: var(--muted); font-size: 10px; font-weight: 600; }
+.agent-actions .action-button[data-pending="true"] { color: var(--blue); border-color: var(--blue); background: var(--blue-soft); }
+.agent-action-feedback { flex: 1 1 100%; margin: 0; font-size: 10px; overflow-wrap: anywhere; }
+.agent-action-feedback[data-level="success"] { color: var(--green); }
+.agent-action-feedback[data-level="error"] { color: var(--red); }
+.agent-action-feedback[data-level="pending"] { color: var(--blue); }
+
+/* 非 DSH Agent（codex / external / backend 未标注）在没有可见 ACP Turn 时的静态执行提示。
+   纯展示块：复用 .agent-card 的卡片语言（raised/panel 底、line 边框、圆角）与左侧状态强调，
+   不新增调色板变量、不伪装成可点击控件；状态色只映射既有 blue/green/amber/purple soft token。
+   并行 app.js Coder 渲染 `.agent-notice[data-backend][data-lifecycle][data-readonly][data-state]`。 */
+.agent-notice { display: grid; gap: 5px; min-width: 0; margin: 2px 0 0; padding: 8px 10px; color: var(--text); background: var(--raised); border: 1px solid var(--line); border-left: 3px solid var(--line); border-radius: 9px; cursor: default; }
+/* 提示也可能作为 `.turns`（padding 6px 11px 12px）的第一个子项出现，此时沿用父级内边距；
+   作为 `.agent-card` 直接子项时与 `.agent-head`/`.fold` 的 11px 水平内边距对齐。 */
+.agent-card > .agent-notice { margin: 8px 11px 0; }
+.agent-notice-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; margin: 0; font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+.agent-notice-head code { overflow-wrap: anywhere; }
+/* facts/note 保持紧凑；长 agentId / taskId / attemptId 允许换行，不撑破网格。 */
+.agent-notice-facts { display: flex; flex-wrap: wrap; gap: 3px 12px; min-width: 0; margin: 0; color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+.agent-notice-facts code { color: var(--text); overflow-wrap: anywhere; }
+/* 无空格的长 Task title 只在自身换行；不允许用 overflow:hidden 把文本截断。 */
+.agent-notice-task-title { min-width: 0; overflow-wrap: anywhere; }
+.agent-notice-note { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
+.agent-notice[data-state="running"] { background: var(--blue-soft); border-left-color: var(--blue); }
+.agent-notice[data-state="running"] > .agent-notice-head { color: var(--blue); }
+.agent-notice[data-state="idle"] { background: var(--green-soft); border-left-color: var(--green); }
+.agent-notice[data-state="idle"] > .agent-notice-head { color: var(--green); }
+.agent-notice[data-state="recovering"] { background: var(--amber-soft); border-left-color: var(--amber); }
+.agent-notice[data-state="recovering"] > .agent-notice-head { color: var(--amber); }
+.agent-notice[data-state="fallback"] { background: var(--purple-soft); border-left-color: var(--purple); }
+.agent-notice[data-state="fallback"] > .agent-notice-head { color: var(--purple); }
+/* 归档只读提示是历史说明：只用虚线边界做非颜色区分，不引入第二套状态色。 */
+.agent-notice[data-readonly="true"] { border-style: dashed; }
+
+/* 轻量 timeline：Turn 不再是卡片，只是一条带阶段色的左侧时间轴；route/Git/exit/session 等
+   诊断字段全部落入默认折叠的 Details，原始 events 与 artifacts 不受显示层影响。 */
+.turn { padding-left: 10px; border-left: 2px solid var(--line); }
+.turn[data-phase="1"] { border-left-color: var(--amber); }
+.turn[data-phase="2"] { border-left-color: var(--purple); }
+.turn[data-phase="3"] { border-left-color: var(--blue); }
+.turn[data-phase="4"] { border-left-color: var(--green); }
+.turn-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 9px; color: var(--muted); font-size: 10.5px; }
+.turn-head .status { padding: 1px 7px; font-size: 9.5px; }
+.turn-index { color: var(--text); font-size: 11px; font-weight: 600; }
+.turn-phase, .turn-model { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.turn-model { color: var(--text); font-variant-numeric: tabular-nums; }
+.turn-elapsed { margin-left: auto; font-variant-numeric: tabular-nums; }
+.turn-head .action-button { min-height: 22px; padding: 1px 8px; font-size: 10px; }
+.turn-body { display: grid; gap: 2px; padding: 2px 0 6px; }
+.turn-empty { margin: 0; padding: 6px 0; color: var(--muted); font-size: 11px; }
+.turn-error { margin: 4px 0 0; padding: 5px 8px; color: var(--red); background: var(--raised); border-radius: 7px; font-size: 11px; overflow-wrap: anywhere; }
+.timeline-label { margin-top: 5px; color: var(--muted); font-size: 10px; font-weight: 600; letter-spacing: .02em; }
+.timeline { display: grid; gap: 2px; }
+.event { display: grid; grid-template-columns: 72px 74px minmax(0, 1fr); gap: 8px; align-items: start; font-size: 11px; }
+.event-time { color: var(--muted); }
+.event-kind { color: var(--purple); font-weight: 600; }
+.event[data-kind="tool"] .event-kind { color: var(--amber); }
+.event[data-kind="answer"] .event-kind, .event[data-kind="system"] .event-kind { color: var(--green); }
+.event-copy { min-width: 0; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.event-copy code { color: var(--text); }
+/* Details 内部的证据块：无卡片背景，只有紧凑的分栏文本。 */
+.evidence { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 4px 12px; margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--line); }
+.evidence > div { padding: 0; }
+.evidence span { display: block; color: var(--muted); font-size: 9.5px; }
+.evidence strong { display: block; margin-top: 1px; font-weight: 600; font-size: 10.5px; overflow-wrap: anywhere; }
+.evidence small { display: block; max-height: 34px; margin-top: 1px; overflow: hidden; color: var(--muted); font-size: 9px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.detail-line { display: flex; flex-wrap: wrap; gap: 2px 8px; margin: 2px 0; color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+.detail-line span { flex: 0 0 auto; font-weight: 600; }
+.detail-line code { color: var(--text); overflow-wrap: anywhere; }
+.detail-tasks { margin-top: 7px; }
+.detail-tasks .nav-tasks { padding: 0; border-top: 0; }
+
+/* --- 视图切换与 vNext 投影 ---------------------------------------------------- */
+
+/* Tabs 现在住在状态栏里：视觉降级为一枚小分段控件，不再单独占一行。 */
+.view-tabs { display: inline-flex; gap: 3px; padding: 2px; background: var(--raised); border: 1px solid var(--line); border-radius: 999px; }
+.view-tab { padding: 3px 11px; color: var(--muted); background: transparent; border: 0; border-radius: 999px; font-size: 11px; font-weight: 600; cursor: pointer; }
+.view-tab:hover { color: var(--text); }
+.view-tab[aria-selected="true"] { color: light-dark(#fff, #10131a); background: var(--blue); }
+.view-tab:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.view-panel[hidden] { display: none; }
+
+.state { display: inline-flex; align-items: center; padding: 2px 7px; border-radius: 999px; color: var(--muted); background: var(--raised); font-size: 10px; font-weight: 600; }
+.state[data-state="running"] { color: var(--blue); background: var(--blue-soft); }
+.state[data-state="idle"] { color: var(--green); background: var(--green-soft); }
+.state[data-state="recovering"] { color: var(--amber); background: var(--amber-soft); }
+.state[data-state="fallback"] { color: var(--purple); background: var(--purple-soft); }
+
+/* Folding: a DSH-like linear stream. The block keeps a coloured type marker, a chevron and a
+   thin left rule instead of the earlier bordered card, so the conversation reads as one flow.
+   Prompt and Reply open by default; Thought/Plan/Tool fold away unless they are streaming. */
+.fold { border: 0; border-left: 2px solid var(--line); border-radius: 0; background: transparent; }
+.fold > summary { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 4px 6px 4px 3px; cursor: pointer; font-size: 11px; list-style: none; }
+.fold > summary::-webkit-details-marker { display: none; }
+.fold > summary::marker { content: ""; }
+.fold-chevron { flex: 0 0 auto; width: 6px; height: 6px; border-right: 1.4px solid var(--muted); border-bottom: 1.4px solid var(--muted); transform: rotate(-45deg); transition: transform .15s ease; }
+.fold[open] > summary .fold-chevron { transform: rotate(45deg); }
+.fold-label { font-weight: 600; }
+/* 类别首字标识：每块一个彩色字母，配合下面的字号/字面层级区分 Prompt/Reply/Thought/Tool。 */
+.fold-marker { display: grid; place-items: center; flex: 0 0 auto; width: 14px; height: 14px; border-radius: 4px; color: var(--muted); background: var(--raised); font: 700 9px/1 var(--font-mono); }
+.fold-prompt .fold-label { color: var(--blue); }
+.fold-prompt .fold-marker { color: var(--blue); background: var(--blue-soft); }
+.fold-reply .fold-label { color: var(--green); }
+.fold-reply .fold-marker { color: var(--green); background: var(--green-soft); }
+.fold-thought .fold-label, .fold-plan .fold-label { color: var(--purple); }
+.fold-thought .fold-marker, .fold-plan .fold-marker { color: var(--purple); background: var(--purple-soft); }
+.fold-tool .fold-label { color: var(--amber); }
+.fold-tool .fold-marker { color: var(--amber); background: var(--amber-soft); }
+.fold-details .fold-label, .fold-details .fold-marker { color: var(--muted); }
+/* 字体层级：Prompt 最重（委派指令）、Reply 正文、Thought/Plan 阅读体、Tool/Details 紧凑等宽。 */
+.fold-prompt > summary { font-size: 12px; }
+.fold-reply > summary { font-size: 11.5px; }
+.fold-thought > summary, .fold-plan > summary { font-size: 11px; }
+.fold-tool > summary, .fold-details > summary { font-size: 10.5px; }
+/* A failed Tool is marked red only: it never opens itself, the body stays available on demand. */
+.fold[data-fold-failed="true"] { border-left-color: var(--red); }
+.fold[data-fold-failed="true"] .fold-label { color: var(--red); }
+.fold-meta { color: var(--muted); font-size: 10px; }
+.fold-stream { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 10px; }
+.fold-stream::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--blue); animation: fold-pulse 1.4s ease-in-out infinite; }
+@keyframes fold-pulse { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .fold-stream::before { animation: none; opacity: .85; } }
+.fold-body { padding: 2px 6px 6px 15px; }
+.fold-body h4 { margin: 9px 0 3px; font-size: 11px; font-weight: 600; }
+.fold-hint, .detail-empty { margin: 4px 0; color: var(--muted); font-size: 10px; }
+.fold-failure { margin: 5px 0 0; color: var(--red); font-size: 11px; overflow-wrap: anywhere; }
+.event-pre { max-height: 260px; margin: 4px 0 0; padding: 8px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); background: var(--panel); border-radius: 7px; font-size: 11px; }
+/* Type-specific faces: Reply/Prompt normal UI sans, Thought a reading serif with looser leading,
+   Tool a compact monospace, Plan a compact monospace listing.
+   轻量层：Prompt/Reply/Thought 直接落在时间轴上（无卡片底色），只有等宽的 Tool/Plan 证据块
+   保留一个很淡的底，避免“每个事件一张卡”的旧观感。 */
+.fold-prompt .fold-body > pre, .fold-reply .fold-body > pre { font-family: var(--font-ui); font-size: 11.5px; line-height: 1.55; }
+.fold-prompt .event-pre, .fold-reply .event-pre { font-family: var(--font-ui); line-height: 1.55; }
+.fold-thought .event-pre { font-family: var(--font-serif); font-size: 12px; line-height: 1.75; }
+.fold-tool .event-pre { font-family: var(--font-mono); line-height: 1.35; }
+.fold-plan .event-pre { font-family: var(--font-mono); line-height: 1.4; }
+.fold-prompt .event-pre, .fold-reply .event-pre, .fold-thought .event-pre { background: transparent; padding: 2px 0; max-height: 320px; }
+.fold-tool .event-pre, .fold-plan .event-pre { background: var(--raised); }
+.timeline-note { margin: 6px 0 0; color: var(--muted); font-size: 10px; }
+
+/* Archive view: read-only conversations for archived / DISSOLVED / previous Teams plus the
+   unassigned legacy Agents. Three columns (Team / Agent / conversation), no write controls. */
+.archive-hint { margin: 14px 0 0; color: var(--muted); font-size: 11px; }
+.archive-workspace { grid-template-columns: minmax(176px, 212px) minmax(192px, 248px) minmax(0, 1fr); }
+.archive-team-list { display: grid; gap: 6px; }
+.archive-team { display: grid; gap: 3px; width: 100%; padding: 8px 9px; text-align: left; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--line); border-radius: 9px; cursor: pointer; font-size: 11px; }
+.archive-team:hover { border-color: var(--blue); }
+.archive-team[data-selected="true"] { border-color: var(--blue); background: var(--blue-soft); }
+.archive-team:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.archive-team[data-archive-team-status="archived"] { border-left-color: var(--amber); }
+.archive-team[data-archive-team-status="dissolved"] { border-left-color: var(--muted); }
+.archive-team[data-archive-team-status="legacy"] { border-left-color: var(--purple); }
+/* “当前 Team · 已退役 Agent”入口：与已归档一样是历史，用琥珀色区分于失败态。 */
+.archive-team[data-archive-team-status="retired"] { border-left-color: var(--amber); }
+.archive-team-head { display: flex; align-items: center; gap: 6px; }
+.archive-team-title { min-width: 0; overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.archive-team-badge { flex: 0 0 auto; margin-left: auto; padding: 1px 7px; border-radius: 999px; color: var(--muted); background: var(--raised); font-size: 10px; font-weight: 600; }
+.archive-team-badge[data-archive-team-status="archived"] { color: var(--amber); background: var(--amber-soft); }
+.archive-team-badge[data-archive-team-status="legacy"] { color: var(--purple); background: var(--purple-soft); }
+.archive-team-badge[data-archive-team-status="retired"] { color: var(--amber); background: var(--amber-soft); }
+.archive-team-meta { color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+.archive-team[data-archive-team-status="dissolved"] .archive-team-title { color: var(--muted); }
+/* Archived task chips are inert markers: they carry no selection and no action. */
+.task-chip-static { cursor: default; }
+.task-chip-static:hover { border-color: var(--line); }
+
+/* Tasks view：只读 Team / Task 投影，功能保留但视觉降级（虚线容器、无强对比卡面）。 */
+.tasks-hint { margin: 10px 0 0; color: var(--muted); font-size: 11px; }
+.tasks-hint code { color: var(--text); }
+.tasks-empty { margin: 10px 0 0; padding: 14px; color: var(--muted); text-align: center; background: transparent; border: 1px dashed var(--line); border-radius: 10px; font-size: 11px; }
+.tasks-empty[hidden] { display: none; }
+.team-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px; margin-top: 10px; }
+.team-card { padding: 8px 10px; background: transparent; border: 1px dashed var(--line); border-radius: 10px; }
+.team-card[data-team-status="AWAITING_USER_ACCEPTANCE"] { border-color: var(--amber); }
+.team-card[data-team-status="DISSOLVED"] { opacity: .72; }
+.team-card-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.team-card-head h3 { margin: 0; font-size: 13px; font-weight: 600; }
+.team-id { color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+.team-status { margin-left: auto; padding: 2px 8px; border-radius: 999px; color: var(--blue); background: var(--blue-soft); font-size: 10px; font-weight: 600; }
+.team-status[data-team-status="AWAITING_USER_ACCEPTANCE"] { color: var(--amber); background: var(--amber-soft); }
+.team-status[data-team-status="DISSOLVED"] { color: var(--muted); background: var(--raised); }
+.team-progress { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 8px; color: var(--muted); font-size: 10px; }
+.progress-track { display: flex; flex: 1 1 120px; gap: 2px; }
+.progress-seg { flex: 1 1 0; height: 5px; border-radius: 2px; background: var(--line); }
+.progress-seg[data-done="true"] { background: var(--green); }
+.progress-count { color: var(--text); font-weight: 600; }
+.team-notice { margin: 8px 0 0; color: var(--amber); font-size: 10px; }
+.task-groups { display: grid; gap: 10px; margin-top: 10px; }
+.task-group { padding: 8px 10px; background: transparent; border: 1px dashed var(--line); border-radius: 10px; }
+.task-group-title { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 7px; color: var(--muted); font-size: 11px; font-weight: 600; }
+.task-group-title code { color: var(--muted); font-size: 10px; }
+.task-rows { display: grid; gap: 6px; }
+.task-row { padding: 7px 9px; background: transparent; border: 1px solid var(--line); border-left: 2px solid var(--line); border-radius: 8px; }
+.task-row[data-task-status="RUNNING"], .task-row[data-task-status="ASSIGNED"] { border-left-color: var(--blue); }
+.task-row[data-task-status="COMPLETED"] { border-left-color: var(--green); }
+.task-row[data-task-status="FAILED"], .task-row[data-task-status="CANCELLED"] { border-left-color: var(--red); }
+.task-row[data-task-status="BLOCKED"] { border-left-color: var(--amber); }
+.task-row[data-task-status="READY"] { border-left-color: var(--purple); }
+.task-row-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.task-status { padding: 2px 8px; border-radius: 999px; color: var(--muted); background: var(--panel); font-size: 10px; font-weight: 600; }
+.task-status[data-task-status="RUNNING"], .task-status[data-task-status="ASSIGNED"] { color: var(--blue); background: var(--blue-soft); }
+.task-status[data-task-status="COMPLETED"] { color: var(--green); background: var(--green-soft); }
+.task-status[data-task-status="FAILED"], .task-status[data-task-status="CANCELLED"] { color: var(--red); background: var(--raised); }
+.task-status[data-task-status="BLOCKED"] { color: var(--amber); background: var(--amber-soft); }
+.task-status[data-task-status="READY"] { color: var(--purple); background: var(--purple-soft); }
+.task-title { flex: 1 1 auto; min-width: 0; font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+.task-row[data-has-deps="true"] .task-title::before { content: "↳ "; color: var(--muted); }
+/* The row header is the presentational selection area shared with the sidebar chips and the DAG
+   nodes; it carries no scheduling action. */
+.task-select { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; width: 100%; padding: 0; text-align: left; color: inherit; background: transparent; border: 0; cursor: pointer; }
+.task-select[aria-pressed="true"] { color: var(--blue); }
+.task-select:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; border-radius: 6px; }
+.task-row[data-task-selected="true"] { border-color: var(--blue); box-shadow: inset 0 0 0 1px var(--blue); }
+.task-id { color: var(--muted); font-size: 10px; }
+.task-meta { display: flex; flex-wrap: wrap; gap: 3px 12px; margin-top: 6px; color: var(--muted); font-size: 10px; }
+.task-meta code { color: var(--text); }
+.task-deps { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 6px; color: var(--muted); font-size: 10px; }
+.deps-label { font-weight: 600; }
+.dep-chip { padding: 1px 7px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); font-size: 10px; }
+.dep-chip[data-satisfied="true"] { color: var(--green); border-color: var(--green); }
+.dep-chip[data-satisfied="false"] { color: var(--amber); border-color: var(--amber); }
+.deps-none { color: var(--muted); }
+.task-row .fold { margin-top: 8px; }
+.detail-line { margin: 3px 0; }
+.attempt-list { display: grid; gap: 5px; margin: 0; padding: 0; list-style: none; }
+.attempt-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 6px 8px; background: var(--panel); border-radius: 7px; color: var(--muted); font-size: 10px; }
+.attempt-row[data-current="true"] { border-left: 2px solid var(--blue); }
+.attempt-row code { color: var(--text); }
+.attempt-badge { margin-left: 5px; padding: 1px 6px; border-radius: 999px; color: var(--blue); background: var(--blue-soft); }
+.attempt-fenced { padding: 1px 6px; border-radius: 999px; color: var(--amber); background: var(--amber-soft); }
+
+/* --- Task dependency DAG (Agents view, read-only) ---------------------------
+   Team/Tasks 仍然完整可用，但视觉降级：虚线边框、透明底、更小标题，不抢对话流的注意力。 */
+.task-dag-panel { margin-top: 10px; background: transparent; border: 1px dashed var(--line); border-radius: 10px; }
+/* 归档任务依赖面板与三列 .archive-workspace 平级（不进该 grid），内部滚动仍由 .dag-scroll 承担，
+   所以窄屏下页面本身不会被 DAG 宽度撑出横向滚动。这条必须写在 .task-dag-panel 之后才生效：
+   两者都是单类选择器，间距由层叠顺序决定，写在归档小节里会被这里的 10px 覆盖。 */
+.archive-task-dag-panel { margin-top: 12px; }
+.task-dag-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 10px; padding: 7px 11px; cursor: pointer; }
+.task-dag-summary::-webkit-details-marker { display: none; }
+.task-dag-title { font-size: 11.5px; font-weight: 600; color: var(--muted); }
+.task-dag-title::before { content: "▸ "; color: var(--muted); }
+.task-dag-panel[open] .task-dag-title::before { content: "▾ "; }
+.task-dag-meta { margin-left: auto; color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+.task-dag-body { padding: 0 14px 14px; }
+
+/* The scroll container owns both axes so the DAG never creates page-level horizontal scroll. */
+.dag-scroll { max-height: 300px; padding: 10px; overflow: auto; overscroll-behavior: contain; touch-action: pan-x pan-y; background: var(--raised); border: 1px solid var(--line); border-radius: 10px; }
+.dag-scroll:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+/* Geometry must mirror the JS model: column gap 56px, node 168x66, row gap 18px. */
+.dag-canvas { position: relative; display: flex; align-items: flex-start; gap: 56px; width: max-content; min-height: 66px; }
+/* `.dag-edges` is absolutely positioned, so it would otherwise paint above the statically
+   positioned columns and a multi-column edge would cross the node faces. Both children live in
+   this one stacking context: edges at 0, node cards explicitly above them at 1. */
+.dag-columns { position: relative; z-index: 1; display: flex; align-items: flex-start; gap: 56px; }
+.dag-edges { position: absolute; z-index: 0; top: 0; left: 0; pointer-events: none; }
+.dag-edge { fill: none; stroke: var(--line); stroke-width: 1.6; }
+.dag-edge-missing { stroke: var(--amber); stroke-dasharray: 5 4; }
+.dag-edge-cyclic { stroke: var(--red); stroke-dasharray: 3 3; }
+.dag-col { display: flex; flex: 0 0 auto; flex-direction: column; gap: 18px; width: 168px; }
+.dag-node { display: grid; gap: 3px; width: 168px; height: 66px; padding: 7px 9px; overflow: hidden; text-align: left; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--line); border-radius: 9px; cursor: pointer; }
+.dag-node[data-task-status="RUNNING"], .dag-node[data-task-status="ASSIGNED"] { border-left-color: var(--blue); }
+.dag-node[data-task-status="COMPLETED"] { border-left-color: var(--green); }
+.dag-node[data-task-status="FAILED"], .dag-node[data-task-status="CANCELLED"] { border-left-color: var(--red); }
+.dag-node[data-task-status="BLOCKED"] { border-left-color: var(--amber); }
+.dag-node[data-task-status="READY"] { border-left-color: var(--purple); }
+.dag-node[aria-pressed="true"] { background: var(--blue-soft); border-color: var(--blue); box-shadow: inset 0 0 0 1px var(--blue); }
+.dag-node[data-cyclic="true"] { border-color: var(--red); }
+.dag-node:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.dag-node-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.dag-node-head code { overflow: hidden; color: var(--text); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.dag-node-status { margin-left: auto; color: var(--muted); font-size: 9px; white-space: nowrap; }
+.dag-node-cyclic { padding: 0 5px; border-radius: 999px; color: var(--red); background: var(--raised); font-size: 9px; }
+.dag-node-title { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; font-size: 11px; font-weight: 600; overflow-wrap: anywhere; }
+.dag-node-owner { overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.dag-node-owner code { color: var(--text); }
+.dag-missing { border-style: dashed; border-left-color: var(--amber); color: var(--amber); background: transparent; cursor: default; }
+/* 归档页的 DAG 节点是静态只读标记：没有选择/点击语义，所以不显示 pointer 光标。 */
+.dag-node-static { cursor: default; }
+.dag-node-static:hover { border-color: var(--line); }
+.dag-empty { margin: 0; color: var(--muted); font-size: 11px; }
+.dag-detail { margin-top: 10px; padding: 10px 12px; background: var(--raised); border: 1px solid var(--line); border-radius: 10px; }
+.dag-detail-empty { margin: 10px 0 0; color: var(--muted); font-size: 11px; }
+.dag-detail-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.dag-detail-head h4 { margin: 0; font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+.dag-detail-meta { display: flex; flex-wrap: wrap; gap: 3px 12px; margin: 6px 0 0; color: var(--muted); font-size: 10px; }
+.dag-detail-meta code { color: var(--text); }
+.dag-detail h5 { margin: 9px 0 3px; color: var(--muted); font-size: 11px; font-weight: 600; }
+
+@media (max-width: 860px) {
+  /* 单列轨道必须显式写成 minmax(0, 1fr)：归档详情里一条不可断行的委派 Prompt（裸 <pre>）会把
+     `1fr` 的自动最小尺寸（= grid item 的 min-content）撑到 2000px 级——560px 实测 scrollWidth
+     2110 / clientWidth 545。minmax(0, 1fr) 让轨道永不超过容器，配合下面的 min-width:0 让 item 可收缩。 */
+  .workspace { grid-template-columns: minmax(0, 1fr); }
+  .sidebar { position: static; max-height: none; }
+  /* 多列时不让同排里最高的一张卡把其余卡拉伸到同样高度。 */
+  .agent-list { grid-template-columns: repeat(auto-fill, minmax(196px, 1fr)); align-items: start; }
+  .detail-pane { max-height: none; min-height: 0; min-width: 0; overflow: visible; }
+  /* 与 `.event-pre` 一致：窄屏下折叠体内的 <pre> 改为可换行，消除会把网格轨道撑开的不可断行长行。 */
+  .fold-body > pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+  /* Node/column geometry stays fixed so the JS-computed edges keep matching the DOM. */
+  .dag-scroll { max-height: 260px; }
+}
+
+@media (max-width: 760px) {
+  .status-metrics { width: 100%; margin-left: 0; }
+  .evidence { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 560px) {
+  .app-shell { padding: 8px; }
+  .statusbar { gap: 5px 8px; }
+  .brand-title { display: none; }
+  .view-tabs { width: 100%; }
+  .view-tab { flex: 1 1 0; }
+  .model-control { width: 100%; }
+  .model-control > summary { width: 100%; }
+  .model-form { right: auto; left: 0; }
+  .connection { width: max-content; }
+  .sync-block { width: 100%; }
+  .sync-button { min-height: 40px; flex: 1 1 auto; }
+  .agent-head { gap: 3px 7px; }
+  .event { grid-template-columns: 60px 62px minmax(0, 1fr); }
+  .action-button { min-height: 44px; }
+  .team-status { margin-left: 0; }
+  .turn-elapsed { margin-left: 0; }
+  .team-summary-head h3 { white-space: normal; }
+  .task-chip code { max-width: 72px; }
+  /* 窄屏进一步收窄侧栏 chip，`.nav-item` 的 overflow:hidden 兜底，页面不产生横向滚动。 */
+  .nav-item .nav-tasks { padding: 0 8px 7px; }
+  .nav-item .task-chip { padding: 1px 5px; }
+  .nav-item .task-chip code { max-width: 64px; }
+  /* 计时行与窄屏 chip 同节奏；只缩字号，不改换行/滚动行为。 */
+  .nav-timers { font-size: 9px; }
+  /* 非 DSH 执行提示在窄屏只收紧内边距与间距：无固定宽度、无二级滚动。 */
+  .agent-notice { padding: 7px 8px; }
+  .agent-notice-facts { gap: 3px 9px; }
+  .task-dag-body { padding: 0 10px 12px; }
+  .task-dag-meta { margin-left: 0; }
+  .dag-scroll { padding: 8px; }
+  .dag-detail-meta { gap: 3px 8px; }
+}

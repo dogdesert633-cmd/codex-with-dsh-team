@@ -1,0 +1,12 @@
+node_modules/
+
+# Toolkit runtime output. The Monitor writes run evidence, the Team bridge writes session
+# artefacts and the launchers may leave backups while refreshing a pin; none of it belongs
+# in version control when the toolkit is installed into a project.
+artifacts/
+.dsh/
+*.log
+*.bak
+
+# Never commit a runtime record or a credential copy that a local run may have produced.
+.codex-dsh-team-home.json

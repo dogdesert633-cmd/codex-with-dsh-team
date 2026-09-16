@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="Codex 到 DeepSeek Harness 的本地实时委派监视器">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232967c8'/%3E%3Cpath d='M9 10h6v4H9zm8 8h6v4h-6zM14 12l5 8' stroke='white' stroke-width='2.5' fill='none'/%3E%3C/svg%3E">
+    <title>DSH Team Monitor</title>
+    <link rel="stylesheet" href="/styles.css">
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <!-- 单条状态栏：Live / Agent / Task / 更新时间 + 默认模型控件 + 一键同步。 -->
+      <header class="statusbar">
+        <div class="brand-mark" aria-hidden="true">D</div>
+        <h1 class="brand-title">DSH Team Monitor</h1>
+        <nav class="view-tabs" role="tablist" aria-label="监视器主视图">
+          <button class="view-tab" id="tab-current" type="button" role="tab" data-tab="current" aria-selected="true" aria-controls="panel-current" tabindex="0">当前团队</button>
+          <button class="view-tab" id="tab-archive" type="button" role="tab" data-tab="archive" aria-selected="false" aria-controls="panel-archive" tabindex="-1">归档对话</button>
+          <button class="view-tab" id="tab-tasks" type="button" role="tab" data-tab="tasks" aria-selected="false" aria-controls="panel-tasks" tabindex="-1">Tasks</button>
+        </nav>
+        <p class="status-metrics">
+          <span class="connection" id="connection" data-state="connecting"><span class="connection-dot" aria-hidden="true"></span><span id="connection-text">正在连接</span></span>
+          <span class="metric">Agent <strong id="agent-metric">0</strong></span>
+          <span class="metric">Task <strong id="task-metric">0 / 0</strong></span>
+          <span class="metric metric-time">更新 <strong id="updated-metric">--:--:--</strong></span>
+        </p>
+        <details class="model-control" id="model-control">
+          <summary>
+            <span>Default Model / 默认模型</span>
+            <strong id="model-current">读取 DSH 设置中</strong>
+          </summary>
+          <form id="model-form" class="model-form">
+            <label>
+              <span>供应商</span>
+              <select id="model-provider" name="provider" disabled></select>
+            </label>
+            <label>
+              <span>模型</span>
+              <select id="model-name" name="model" disabled></select>
+            </label>
+            <div id="model-provider-meta" class="model-provider-meta"></div>
+            <p class="model-scope">仅影响后续 spawn / follow-up；当前运行中的 Turn 不会切换。</p>
+            <p id="model-message" class="model-message" role="status" aria-live="polite"></p>
+            <div class="model-actions">
+              <button class="action-button" id="model-follow-default" type="button">跟随 DSH 默认</button>
+              <button class="action-button model-apply" type="submit">应用</button>
+            </div>
+          </form>
+        </details>
+        <p class="sync-block">
+          <button class="sync-button" id="sync-settings" type="button" data-state="idle" aria-describedby="sync-message" title="把主 DSH Home 的 provider / model / auth 同步到 Team Home；不重启 Monitor">一键同步设置</button>
+          <span class="sync-message" id="sync-message" role="status" aria-live="polite"></span>
+        </p>
+      </header>
+
+      <main>
+        <section id="panel-current" class="view-panel" role="tabpanel" aria-labelledby="tab-current">
+          <div class="workspace">
+            <aside class="sidebar" aria-labelledby="agent-list-title">
+              <div class="section-heading">
+                <div>
+                  <h2 id="agent-list-title">DSH 子智能体</h2>
+                  <p>左侧选择 Agent，右侧查看其全部 Turn 实时对话。</p>
+                </div>
+              </div>
+              <div id="team-summary" class="team-summary"></div>
+              <div id="agent-list" class="agent-list" aria-live="polite"></div>
+              <p id="sidebar-empty" class="sidebar-empty">暂无 Agent</p>
+            </aside>
+
+            <section class="detail-pane" id="detail-pane" role="region" aria-label="Agent 多轮详情">
+              <div id="agent-detail" class="agent-detail"></div>
+              <div id="empty-state" class="empty-state">
+                <div class="empty-icon" aria-hidden="true">↗</div>
+                <h3>等待 Codex 委派</h3>
+                <p>当 Coordinator spawn 一个 DSH child agent 后，这里会自动出现 Agent 卡片与其全部 Turn。无需在网页重复输入任务。</p>
+              </div>
+            </section>
+          </div>
+
+          <!-- 默认折叠：无依赖或空 DAG 不占空间，renderDag() 只在真的有依赖边时自动展开。 -->
+          <details id="task-dag-panel" class="task-dag-panel">
+            <summary class="task-dag-summary">
+              <span class="task-dag-title">任务依赖</span>
+              <span id="task-dag-meta" class="task-dag-meta">暂无 Team 投影</span>
+            </summary>
+            <div id="task-dag-body" class="task-dag-body"></div>
+          </details>
+        </section>
+
+        <section id="panel-archive" class="view-panel" role="tabpanel" aria-labelledby="tab-archive" hidden>
+          <p class="archive-hint">归档对话为严格只读视图：包含已归档、已解散与非当前的旧 Team，以及未归属历史 Agent。本页没有任何 cancel / assign / reassign / 编辑 / 删除控件，切换选择只改变本页的浏览状态。</p>
+          <div class="workspace archive-workspace">
+            <aside class="sidebar archive-teams" aria-labelledby="archive-team-title">
+              <div class="section-heading">
+                <div>
+                  <h2 id="archive-team-title">归档团队</h2>
+                  <p>按 Team 选择要回看的对话。</p>
+                </div>
+              </div>
+              <div id="archive-team-list" class="archive-team-list" role="group" aria-label="归档 Team 选择"></div>
+              <p id="archive-empty" class="sidebar-empty" hidden>暂无归档或历史 Team。</p>
+            </aside>
+
+            <aside class="sidebar archive-agents" aria-labelledby="archive-agent-title">
+              <div class="section-heading">
+                <div>
+                  <h2 id="archive-agent-title">归档 Agent</h2>
+                  <p>仅显示所选 Team 的 Agent。</p>
+                </div>
+              </div>
+              <div id="archive-agent-list" class="agent-list" aria-live="polite"></div>
+              <p id="archive-agent-empty" class="sidebar-empty">未选择归档 Team</p>
+            </aside>
+
+            <section class="detail-pane" id="archive-detail-pane" role="region" aria-label="归档 Agent 只读详情">
+              <div id="archive-agent-detail" class="agent-detail"></div>
+              <div id="archive-empty-state" class="empty-state">
+                <div class="empty-icon" aria-hidden="true">🗄</div>
+                <h3>归档对话</h3>
+                <p>左侧选择一个已归档 Team 与其成员 Agent，这里会以只读方式回放该 Agent 的全部 Turn 与公开事件。</p>
+              </div>
+            </section>
+          </div>
+
+          <!-- 归档任务依赖：与三列 .archive-workspace 平级的独立面板，只描述当前选中的真实历史
+               Team，严格只读。默认折叠，只有该 Team 真的有依赖边时自动展开；用户手动开合后由
+               archiveDagUserToggled 完全接管，后续 SSE render 不再改写。 -->
+          <details id="archive-task-dag-panel" class="task-dag-panel archive-task-dag-panel">
+            <summary class="task-dag-summary">
+              <span class="task-dag-title">归档任务依赖</span>
+              <span id="archive-task-dag-meta" class="task-dag-meta">未选择归档 Team</span>
+            </summary>
+            <div id="archive-task-dag-body" class="task-dag-body"></div>
+          </details>
+        </section>
+
+        <section id="panel-tasks" class="view-panel" role="tabpanel" aria-labelledby="tab-tasks" hidden>
+          <p class="tasks-hint">只读 Team / Task 投影，仅显示当前 Team：来源为 monitor 的 <code>/api/teams</code>、<code>/api/tasks</code> 与 SSE <code>snapshot</code>/<code>team</code>/<code>task</code>。历史与已归档 Team 见「归档对话」，本页不含任何写操作控件。</p>
+          <p id="tasks-empty" class="tasks-empty" hidden>暂无 Team 或 Task 投影。当 Coordinator 创建 Team/Task 后，这里会自动出现依赖 DAG 与进度。</p>
+          <div id="team-cards" class="team-cards" aria-live="polite"></div>
+          <div id="task-groups" class="task-groups"></div>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>

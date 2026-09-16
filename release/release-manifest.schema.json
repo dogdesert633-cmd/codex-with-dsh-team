@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "codex-dsh-team-toolkit/release-manifest.schema.json",
+  "title": "Codex x DSH Team Toolkit release manifest",
+  "description": "Written by tools/Build-Release.ps1 and consumed by install/Invoke-Toolkit.ps1. Every path is relative: 'path' is relative to the target project root, 'source' is relative to the extracted package root. Only files listed here are ever installed. Entries carry location metadata only: no digest field exists, no digest is read, validated or stored, and the toolkit makes no claim about the integrity of the release transport (that belongs to the distribution channel).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "name", "version", "stateDirectory", "fileCount", "files"],
+  "properties": {
+    "schema": { "const": "codex-dsh-team-toolkit/release-manifest/v1" },
+    "name": { "const": "codex-dsh-team-toolkit" },
+    "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+([-+][0-9A-Za-z.\\-]+)?$" },
+    "stateDirectory": { "type": "string", "pattern": "^(?!\\.\\.)[A-Za-z0-9._-]+$" },
+    "generatedAtUtc": { "type": "string" },
+    "fileCount": { "type": "integer", "minimum": 1 },
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "source"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "normalized relative path inside the target project",
+            "pattern": "^(?!/)(?!.*\\.\\.)(?!.*//)(?!.*\\\\)[^<>:\"|?*]+$"
+          },
+          "source": {
+            "type": "string",
+            "description": "normalized relative path inside the package root",
+            "pattern": "^(?!/)(?!.*\\.\\.)(?!.*//)(?!.*\\\\)[^<>:\"|?*]+$"
+          }
+        }
+      }
+    }
+  }
+}

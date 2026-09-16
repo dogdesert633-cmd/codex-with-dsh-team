@@ -1,0 +1,23 @@
+{
+  "name": "mcp-to-dsh-skill",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "check": "node --check src/security.mjs && node --check src/team-home.mjs && node --check src/cli.mjs && node --check src/server.mjs && node --check src/model-settings.mjs && node --check public/model-revision.js && node --check public/app.js",
+    "start": "node src/cli.mjs",
+    "serve": "node src/server.mjs",
+    "test": "node --test test/*.test.mjs",
+    "test:security": "node --test test/security.test.mjs test/team-home.test.mjs"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "1.4.0",
+    "@deepseek-ai/dsh": "0.1.5-rc.1",
+    "@earendil-works/pi-ai": "0.85.1",
+    "yaml": "^2.9.0",
+    "zod": "^4.1.5"
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "codex-dsh-team-toolkit/ownership-manifest.schema.json",
+  "title": "Codex x DSH Team Toolkit ownership manifest (installed ledger)",
+  "description": "Written by install/Invoke-Toolkit.ps1 into <target>/.codex-dsh-team-toolkit/manifest.json. It records safe relative paths and state metadata only: no checksum, hash or digest field exists anywhere in this document. Ownership is proved at run time by comparing a managed file byte for byte with its pristine baseline under <state>/pristine/<same relative path>; a file may be replaced or deleted only while it is byte-identical to that baseline. The ledger is self-locating (it describes the state directory layout, never an absolute project path), so a relocated project keeps working. It never contains file contents, credentials, secret values or absolute personal paths.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema", "name", "version", "installId", "location", "fileCount", "files"],
+  "properties": {
+    "schema": { "const": "codex-dsh-team-toolkit/ownership-manifest/v1" },
+    "name": { "const": "codex-dsh-team-toolkit" },
+    "version": { "type": "string" },
+    "installId": { "type": "string", "pattern": "^[0-9a-fA-F-]{8,64}$" },
+    "updatedAtUtc": { "type": "string" },
+    "description": { "type": "string" },
+    "location": {
+      "type": "object",
+      "description": "Self-locating state layout. No absolute path and no location digest is ever persisted.",
+      "required": ["stateDir", "pristineRoot"],
+      "properties": {
+        "stateDir": { "const": ".codex-dsh-team-toolkit" },
+        "pristineRoot": {
+          "const": "pristine",
+          "description": "Directory (inside the state directory) that holds the exact installed bytes of every managed file"
+        }
+      }
+    },
+    "fileCount": { "type": "integer", "minimum": 1 },
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "pristine", "state"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Managed path, relative to the target project root.",
+            "pattern": "^(?!/)(?!.*\\.\\.)(?!.*//)(?!.*\\\\)[^<>:\"|?*]+$"
+          },
+          "pristine": {
+            "type": "string",
+            "description": "Baseline path relative to the state directory: pristine/<the same relative path>. This is the only ownership reference; it is a path, never a digest.",
+            "pattern": "^pristine/(?!/)(?!.*\\.\\.)(?!.*//)(?!.*\\\\)[^<>:\"|?*]+$"
+          },
+          "state": { "const": "owned" }
+        }
+      }
+    }
+  }
+}

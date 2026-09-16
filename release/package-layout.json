@@ -1,0 +1,60 @@
+{
+  "schema": "codex-dsh-team-toolkit/package-layout/v1",
+  "name": "codex-dsh-team-toolkit",
+  "description": "Non-payload release layout. The managed payload set is declared by release/payload-inventory.json (the toolkit-owned source of truth); this file describes the toolkit infrastructure that must always be packaged.",
+  "payloadRoot": "payload",
+  "payloadInventory": "release/payload-inventory.json",
+  "payloadInventoryRules": [
+    "The release inventory is toolkit-owned at release/payload-inventory.json: only paths declared there are installed as managed payload files.",
+    "A payload-side COPY_FILE_LIST.json is not an inventory: it does not exist in this toolkit and is never packaged, installed or consulted. The only inventory is release/payload-inventory.json.",
+    "Undeclared files present in payload/ (stray files, build leftovers, metadata) are reported and excluded unless -IncludeUndeclaredPayload is passed.",
+    "A declared path that is missing from payload/ stops the build: the managed set is never guessed.",
+    "No checksum artefact is produced or packaged: there is no SHA256SUMS.txt and no .sha256 sidecar. Release transport integrity belongs to the distribution channel, not to the toolkit.",
+    "No other source metadata (build reports, editor files) is packaged."
+  ],
+  "managed": [
+    {
+      "source": "install/Invoke-Toolkit.ps1",
+      "path": ".codex-dsh-team-toolkit/engine/Invoke-Toolkit.ps1"
+    },
+    {
+      "source": "uninstaller/CodexDshTeamToolkit.Uninstall.exe",
+      "path": "CodexDshTeamToolkit.Uninstall.exe"
+    }
+  ],
+  "packageOnly": [
+    "Install.cmd",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "docs/INSTALLATION.md",
+    "docs/CONFIGURATION.md",
+    "docs/SECURITY.md",
+    "docs/TROUBLESHOOTING.md",
+    "install/Invoke-Toolkit.ps1",
+    "uninstaller/CodexDshTeamToolkit.Uninstall.exe",
+    "uninstaller/Build-Uninstaller.ps1",
+    "uninstaller/src/Uninstaller.cs",
+    "release/package-layout.json",
+    "release/payload-inventory.json",
+    "release/release-manifest.schema.json",
+    "release/ownership-manifest.schema.json"
+  ],
+  "releaseMustContain": [
+    "Install.cmd",
+    "install/Invoke-Toolkit.ps1",
+    "uninstaller/CodexDshTeamToolkit.Uninstall.exe",
+    "uninstaller/Build-Uninstaller.ps1",
+    "uninstaller/src/Uninstaller.cs",
+    "release-manifest.json",
+    "LICENSE",
+    "README.md",
+    "README.zh-CN.md",
+    "CHANGELOG.md",
+    "docs/INSTALLATION.md",
+    "docs/CONFIGURATION.md",
+    "docs/SECURITY.md",
+    "docs/TROUBLESHOOTING.md"
+  ]
+}

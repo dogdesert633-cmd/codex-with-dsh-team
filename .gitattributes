@@ -1,0 +1,29 @@
+# Line-ending and binary policy for this repository.
+#
+# Windows entry points (*.cmd) must be CRLF and ASCII so a double-click works in cmd.exe on
+# every Windows version, regardless of the client's core.autocrlf setting. Everything else is
+# normalised by git and checked out with LF.
+#
+# The tests assert this: every *.cmd under the project must be CRLF with no non-ASCII byte.
+
+* text=auto
+
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+*.ps1 text eol=lf
+*.psm1 text eol=lf
+*.cs text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.mjs text eol=lf
+*.js text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+
+# Build output / binaries are never line-ending converted.
+*.exe binary
+*.dll binary
+*.zip binary
+*.png binary
+*.ico binary

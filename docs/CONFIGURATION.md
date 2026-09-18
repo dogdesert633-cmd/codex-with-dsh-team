@@ -6,7 +6,22 @@ behaviour is the test gate `CODEX_DSH_TOOLKIT_TEST` (see below); a normal instal
 never needs it. This statement is scoped to the installer engine only — the installed Node
 Team/Monitor runtime reads its own environment (`LOCALAPPDATA`/`APPDATA` for the toolkit base
 directory, `CODEX_DSH_TEAM_BASE_DIR` as an explicit override, plus the user's DSH
-configuration), and that runtime is documented in the payload's own references.
+configuration), and that runtime is documented in the payload's own references. It requires
+**Node ≥ 22.19.0** and its DSH dependency is pinned and tested against
+**`@deepseek-ai/dsh 0.1.5-rc.1`**; other DSH versions are untested rather than unsupported.
+
+## Entry points
+
+| Entry | Role |
+| --- | --- |
+| `CodexDshTeamToolkit.Install.exe` (package root) | The normal installer entry. Flags: `--target <project>` (or a positional path), `--package <dir>` (default: the EXE's own directory), `--yes`, `--no-ui`, `--plan-only`, `--help`. It is a thin framework-dependent shell: it locates the package and the project, shows the plan produced by the engine below, confirms, calls the engine and forwards its exit code. It holds no ownership, transaction or path logic, is never installed into a project, never enters the ownership ledger, never elevates and adds no network use or persistent system state. |
+| `Install.cmd` (package root) | The zero-dependency CLI/CI and advanced entry: engine parameters pass straight through. It prefers `pwsh.exe` and falls back to the in-box Windows PowerShell. |
+| `install/Invoke-Toolkit.ps1` | The single engine behind both launchers. Call it directly for engine-level switches (`-Action`, `-TestMode`, `-TestFault`, ...). |
+| `CodexDshTeamToolkit.Uninstall.exe` (project root after install) | Thin framework-dependent WinForms launcher for the uninstall path: `--target`, `--plan-only`, `--yes`, `--no-ui`. Unlike the package-root installer launcher, this one **is** installed into the target project root as a managed file and **is** recorded in the ownership ledger (see `managed` in `release/package-layout.json`), so the project can uninstall itself later. Like the installer it never elevates, uses no network and adds no persistent system state. |
+
+None of these entries require elevation, and none of them touch `PATH`, the registry, global
+PowerShell profiles, Git configuration or your source files. The two package-root launchers are
+framework-dependent and run on the .NET Framework 4.x that ships with Windows 10/11.
 
 ## Engine parameters
 
@@ -45,6 +60,23 @@ configuration), and that runtime is documented in the payload's own references.
 | `6` | transaction failed; the project was rolled back | inspect the message, retry |
 | `7` | recovery/rollback was incomplete; transaction evidence was kept | inspect `.codex-dsh-team-toolkit/txn/<id>` |
 | `8` | install or uninstall needs explicit confirmation (interactive `YES`, or `-Yes` in automation) | re-run with `-Yes` |
+
+## Network and data flow
+
+The installer engine and the release tooling are offline: install, upgrade, uninstall, the
+maintainer build and Verify make no network call and send no telemetry. Two other paths are
+different and are documented here so they are not confused with that promise:
+
+- **First `npm ci`** in `<project>\.agents\skills\mcp-to-dsh` contacts the npm registry once to
+  materialise the pinned dependency tree.
+- **Running actual AI tasks** through the installed Team/Monitor runtime sends your prompt,
+  repository context and task text to the **model provider configured in your DSH setup**. That
+  traffic is governed by your provider account and terms and **may incur third-party cost**; it
+  is your configuration, not toolkit telemetry.
+
+State and evidence remain local: the ownership ledger, `pristine/` baselines, transaction
+journal/backups and the Team Home all live under your project and the toolkit's owned runtime
+directory. See [SECURITY.md](SECURITY.md) for what is never recorded.
 
 ## Project state
 
@@ -115,10 +147,11 @@ directory:
 
 Rules enforced by the engine:
 
-- One contract, one marker file. The superseded `.codex-dsh-team-runtime.json`
-  (`codex-dsh-team-toolkit/runtime-marker/v1`) is **not** ownership proof: a directory that
-  carries it alone is refused as unowned, and a directory carrying both markers is refused
-  outright. There is no migration and no dual-marker state.
+- One contract, one marker file. Ownership proof is `.codex-dsh-team-home.json`
+  (`codex-dsh-team-home/v1`) only. A directory that carries `.codex-dsh-team-runtime.json`
+  (`codex-dsh-team-toolkit/runtime-marker/v1`) alone is refused as unowned, and a directory
+  carrying both markers is refused outright: the engine never adopts, converts or merges such a
+  directory.
 - The `installId` comes from the shared `install.json`, never from a directory name, and the
   project ledger, the Team Home marker and the runtime root all use that same id.
 - An existing directory **without** a valid marker is refused — never adopted.
@@ -179,7 +212,9 @@ The managed payload set is **declared**, not discovered:
 - `release/payload-inventory.json` is the **single, current inventory source**. Its `files` array is the managed install set: each declared `path` becomes a
   managed payload entry (`payload/<path>` → `<path>`, the flatten contract).
 - `releaseDevelopmentPaths` in the same inventory lists the public payload tests: they are packaged so the release is an auditable snapshot, but they are **never installed**. Build metadata (inventory, layout, build report) is never packaged and never installed.
-- A payload-side `COPY_FILE_LIST.json` is **deprecated and does not exist** in this toolkit: it is never packaged, never installed and never consulted. Do not treat it as an inventory; `release/payload-inventory.json` is the only one.
+- A payload-side `COPY_FILE_LIST.json` **does not exist** in this toolkit and is never packaged,
+  never installed and never consulted. Do not treat such a file as an inventory;
+  `release/payload-inventory.json` is the only one.
 - Files present in `payload/` but not declared are reported and excluded; only
   `-IncludeUndeclaredPayload` includes them, loudly.
 - A declared file that is missing stops the build.

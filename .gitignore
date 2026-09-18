@@ -11,10 +11,14 @@ dist/
 .dsh/
 artifacts/
 
-# Built binaries are produced by uninstaller/Build-Uninstaller.ps1 and are never committed
+# Built binaries are produced by uninstaller/Build-Uninstaller.ps1 and installer/Build-Installer.ps1
+# and are never committed
 uninstaller/*.exe
 uninstaller/bin/
 uninstaller/build-report.json
+CodexDshTeamToolkit.Install.exe
+installer/bin/
+installer/build-report.json
 
 # Local scratch
 *.tmp

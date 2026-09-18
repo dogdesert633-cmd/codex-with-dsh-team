@@ -655,6 +655,17 @@ function Get-ToolkitPristineFullPath {
   return (Get-ToolkitFullPath -Root $StateDirectory -RelativePath $relative)
 }
 
+function Test-ToolkitStatePristineRootSafe {
+  <#
+    NEW-1: every pristine operation (write, read for proof, delete, empty-directory sweep) goes
+    through here first. A junction at state/pristine would otherwise let a pristine write, delete
+    or empty-directory removal land outside the state directory.
+  #>
+  param([string]$StateDirectory)
+
+  Assert-ToolkitStateRootSafe -StateDirectory $StateDirectory -RelativeRoot $script:TKPristineDirectoryName
+}
+
 function Write-ToolkitPristineFile {
   <#
     Records the pristine baseline for a managed file. The copy is durable and verified by direct
@@ -666,6 +677,7 @@ function Write-ToolkitPristineFile {
     [string]$SourcePath
   )
 
+  Test-ToolkitStatePristineRootSafe -StateDirectory $StateDirectory
   $destination = Get-ToolkitPristineFullPath -StateDirectory $StateDirectory -RelativePath $RelativePath
   if ([string]::IsNullOrEmpty($destination)) {
     Throw-ToolkitFailure -ExitCode $script:TKExitTransaction -Message 'A pristine baseline path could not be derived; refusing to continue.' -Detail ('path=' + (Get-ToolkitSafePath -Path $RelativePath))
@@ -700,6 +712,7 @@ function Test-ToolkitPristineMatches {
     [string]$TargetPath
   )
 
+  Test-ToolkitStatePristineRootSafe -StateDirectory $StateDirectory
   $pristine = Get-ToolkitPristineFullPath -StateDirectory $StateDirectory -RelativePath $RelativePath
   if ([string]::IsNullOrEmpty($pristine)) { return $false }
   return (Test-ToolkitFileContentEqual -PathA $TargetPath -PathB $pristine)
@@ -711,6 +724,7 @@ function Remove-ToolkitPristineFile {
     [string]$RelativePath
   )
 
+  Test-ToolkitStatePristineRootSafe -StateDirectory $StateDirectory
   $pristine = Get-ToolkitPristineFullPath -StateDirectory $StateDirectory -RelativePath $RelativePath
   if ([string]::IsNullOrEmpty($pristine)) { return }
   if (Test-Path -LiteralPath $pristine -PathType Leaf) {
@@ -724,6 +738,7 @@ function Remove-ToolkitEmptyPristineDirectories {
   #>
   param([string]$StateDirectory)
 
+  Test-ToolkitStatePristineRootSafe -StateDirectory $StateDirectory
   $root = Join-Path $StateDirectory $script:TKPristineDirectoryName
   if (-not (Test-Path -LiteralPath $root -PathType Container)) { return }
   $directories = @(Get-ChildItem -LiteralPath $root -Recurse -Force -Directory -ErrorAction SilentlyContinue | Sort-Object { $_.FullName.Length } -Descending)
@@ -1332,6 +1347,14 @@ function New-ToolkitOwnershipManifest {
     })
 }
 
+function Get-ToolkitStateGitIgnoreContent {
+  <#
+    The exact bytes of the self-ignoring state .gitignore the toolkit writes. Used so the file may
+    be removed only while it is still byte-identical to what the toolkit generated.
+  #>
+  return ('# Toolkit-owned state (ledger, log, transaction evidence). Ignore the whole directory.' + [Environment]::NewLine + '*' + [Environment]::NewLine)
+}
+
 function Write-ToolkitStateGitIgnore {
   <#
     A self-ignoring state directory: the project never has to edit its own .gitignore.
@@ -1340,8 +1363,7 @@ function Write-ToolkitStateGitIgnore {
 
   $gitIgnorePath = Join-Path $StateDirectory $script:TKStateGitIgnoreName
   if (Test-Path -LiteralPath $gitIgnorePath -PathType Leaf) { return }
-  $content = '# Toolkit-owned state (ledger, log, transaction evidence). Ignore the whole directory.' + [Environment]::NewLine + '*' + [Environment]::NewLine
-  Write-ToolkitTextFileDurable -Path $gitIgnorePath -Content $content
+  Write-ToolkitTextFileDurable -Path $gitIgnorePath -Content (Get-ToolkitStateGitIgnoreContent)
 }
 
 function Get-ToolkitStateCleanupCandidates {
@@ -1356,15 +1378,33 @@ function Get-ToolkitStateCleanupCandidates {
 function Get-ToolkitOrphanTransactions {
   <#
     Finds transaction directories left behind by a hard interruption (no cleanup ran).
+
+    SAFE-01: a directory under txn/ is only transaction evidence when it actually carries the
+    journal. The toolkit writes journal.json *before* it mutates anything, so a directory without
+    a journal cannot describe a half-applied transaction - it is unproven content that the state
+    cleanup preserves and reports instead of treating as recoverable evidence.
   #>
   param([string]$StateDirectory)
 
   $orphans = New-Object System.Collections.ArrayList
   $txnRoot = Join-Path $StateDirectory $script:TKTxnDirectoryName
   if (-not (Test-Path -LiteralPath $txnRoot -PathType Container)) { return $orphans.ToArray() }
+  # MAJOR-2: the txn root itself must not be a reparse point: Get-ChildItem would follow it and
+  # recovery could act on files outside the state directory.
+  $txnRootItem = Get-ToolkitItemOrNull -Path $txnRoot
+  if (Test-ToolkitReparseItem -Item $txnRootItem) {
+    Throw-ToolkitFailure -ExitCode $script:TKExitBlocked `
+      -Message ('The toolkit state transaction directory is a symlink / junction / reparse point; refusing to enumerate or recover it so nothing outside the state directory can be touched.') `
+      -Detail ('path=' + (Get-ToolkitSafePath -Path $script:TKTxnDirectoryName))
+  }
   foreach ($candidate in @(Get-ChildItem -LiteralPath $txnRoot -Force -Directory -ErrorAction SilentlyContinue | Sort-Object Name)) {
     if (Test-ToolkitReparseItem -Item $candidate) {
       Throw-ToolkitFailure -ExitCode $script:TKExitBlocked -Message 'A transaction directory is a symlink / junction / reparse point; refusing to recover it.' -Detail ('path=' + (Get-ToolkitSafePath -Path $candidate.FullName))
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $candidate.FullName 'journal.json') -PathType Leaf)) {
+      # not transaction evidence: nothing was mutated, so it is left for the state cleanup to
+      # preserve and report rather than being replayed or deleted.
+      continue
     }
     [void]$orphans.Add($candidate)
   }
@@ -1388,12 +1428,17 @@ function Invoke-ToolkitOrphanRecovery {
     [string]$OwnershipManifestPath
   )
 
+  # NEW-1: validate every state sub-root once before recovery replays anything (it restores
+  # target bytes and pristine evidence, and removes transaction evidence).
+  [void](Assert-ToolkitStateRootsSafe -StateDirectory $StateDirectory)
+
   $orphans = @(Get-ToolkitOrphanTransactions -StateDirectory $StateDirectory)
   if ($orphans.Count -eq 0) {
     return (New-ToolkitJsonObject -Properties @{ Recovered = 0; Problems = @(); Changed = $false })
   }
 
   $problems = New-Object System.Collections.ArrayList
+  $keptEvidence = New-Object System.Collections.ArrayList
   $recovered = 0
   foreach ($directory in $orphans) {
     $journalPath = Join-Path $directory.FullName 'journal.json'
@@ -1424,8 +1469,17 @@ function Invoke-ToolkitOrphanRecovery {
       # The transaction had committed: the only leftovers are evidence files.
       Write-ToolkitLine 'The interrupted transaction had already committed; removing its leftover evidence.' 'Warn'
       try {
-        Remove-Item -LiteralPath $directory.FullName -Recurse -Force
-        $recovered++
+        # SAFE-01: only content its own journal justifies may go.
+        $evidence = Remove-ToolkitProvenTransactionDirectory -StateDirectory $StateDirectory -TransactionDirectory $directory.FullName
+        foreach ($problem in @($evidence.Problems)) { [void]$problems.Add([string]$problem) }
+        # NEW-4: quarantine originals of a committed transaction are retained evidence (a previous
+        # run may have promised to keep them), so they are reported as kept, not as a recovery
+        # failure that would block every future run.
+        foreach ($entry in @($evidence.Preserved)) {
+          Write-ToolkitLine ('Kept retained transaction evidence: ' + (Get-ToolkitSafePath -Path (Join-Path $script:TKStateDirectory ([string]$entry)))) 'Warn'
+          [void]$keptEvidence.Add([string]$entry)
+        }
+        if ([bool]$evidence.Removed) { $recovered++ }
       }
       catch {
         [void]$problems.Add('could not remove committed transaction evidence at ' + (Get-ToolkitSafePath -Path $directory.FullName))
@@ -1453,8 +1507,13 @@ function Invoke-ToolkitOrphanRecovery {
       foreach ($problem in @($uninstallRollback.Problems)) { [void]$problems.Add([string]$problem) }
       if ([bool]$uninstallRollback.Ok) {
         try {
-          Remove-Item -LiteralPath $directory.FullName -Recurse -Force
-          $recovered++
+          # SAFE-01: only content its own journal justifies may go.
+          $evidence = Remove-ToolkitProvenTransactionDirectory -StateDirectory $StateDirectory -TransactionDirectory $directory.FullName
+          foreach ($problem in @($evidence.Problems)) { [void]$problems.Add([string]$problem) }
+          foreach ($entry in @($evidence.Preserved)) {
+            [void]$problems.Add('kept unproven content inside recovered uninstall evidence: ' + (Get-ToolkitSafePath -Path (Join-Path $script:TKStateDirectory ([string]$entry))))
+          }
+          if ([bool]$evidence.Removed) { $recovered++ }
         }
         catch {
           [void]$problems.Add('could not remove recovered uninstall evidence at ' + (Get-ToolkitSafePath -Path $directory.FullName))
@@ -1468,8 +1527,13 @@ function Invoke-ToolkitOrphanRecovery {
     foreach ($problem in $rollbackProblems) { [void]$problems.Add($problem) }
     if ($rollbackProblems.Count -eq 0) {
       try {
-        Remove-Item -LiteralPath $directory.FullName -Recurse -Force
-        $recovered++
+        # SAFE-01: only content its own journal justifies may go.
+        $evidence = Remove-ToolkitProvenTransactionDirectory -StateDirectory $StateDirectory -TransactionDirectory $directory.FullName
+        foreach ($problem in @($evidence.Problems)) { [void]$problems.Add([string]$problem) }
+        foreach ($entry in @($evidence.Preserved)) {
+          [void]$problems.Add('kept unproven content inside recovered transaction evidence: ' + (Get-ToolkitSafePath -Path (Join-Path $script:TKStateDirectory ([string]$entry))))
+        }
+        if ([bool]$evidence.Removed) { $recovered++ }
       }
       catch {
         [void]$problems.Add('could not remove recovered transaction evidence at ' + (Get-ToolkitSafePath -Path $directory.FullName))
@@ -1486,7 +1550,7 @@ function Invoke-ToolkitOrphanRecovery {
       -Message 'An interrupted transaction could not be recovered automatically; refusing to continue so nothing is overwritten. The transaction evidence was kept.' `
       -Detail ('state=' + (Get-ToolkitSafePath -Path $StateDirectory))
   }
-  return (New-ToolkitJsonObject -Properties @{ Recovered = $recovered; Problems = @(); Changed = ($recovered -gt 0) })
+  return (New-ToolkitJsonObject -Properties @{ Recovered = $recovered; Problems = @(); Changed = ($recovered -gt 0); KeptEvidence = @($keptEvidence.ToArray()) })
 }
 
 function Assert-ToolkitApplyPreconditions {
@@ -1853,6 +1917,18 @@ function Start-ToolkitTransaction {
   )
 
   $txnRoot = Join-Path $StateDirectory $script:TKTxnDirectoryName
+  # NEW-1: creating the transaction writes into txn/, so that root must be safe first. An occupied
+  # name is not a reparse point but still makes a transaction impossible: fail with a clear message
+  # instead of surfacing a raw directory-creation error.
+  Assert-ToolkitStateRootSafe -StateDirectory $StateDirectory -RelativeRoot $script:TKTxnDirectoryName
+  if (Test-Path -LiteralPath $txnRoot) {
+    $txnRootItem = Get-ToolkitItemOrNull -Path $txnRoot
+    if ($null -ne $txnRootItem -and -not ($txnRootItem -is [System.IO.DirectoryInfo])) {
+      Throw-ToolkitFailure -ExitCode $script:TKExitBlocked `
+        -Message 'The toolkit state root "txn" is occupied by a file, so a transaction directory cannot be created; refusing to continue.' `
+        -Detail ('Remediation: move ' + (Get-ToolkitSafePath -Path (Join-Path $script:TKStateDirectory $script:TKTxnDirectoryName)) + ' aside, then retry. Nothing was changed.')
+    }
+  }
   if (-not (Test-Path -LiteralPath $txnRoot -PathType Container)) {
     New-Item -ItemType Directory -Path $txnRoot -Force | Out-Null
   }
@@ -1909,6 +1985,59 @@ function Save-ToolkitJournal {
   Write-ToolkitTextFileDurable -Path $Transaction.JournalPath -Content ((ConvertTo-ToolkitJson -Object $Transaction.Journal) + [Environment]::NewLine)
 }
 
+function Remove-ToolkitProvenTransactionDirectory {
+  <#
+    SAFE-01: removes a transaction directory only as far as its own journal justifies. A toolkit
+    directory name never authorises deleting whatever a user may have dropped inside it:
+    content the journal does not name is preserved and returned.
+
+    Returns @{ Removed = <bool>; Preserved = @(<relative paths>); Problems = @() } where Removed
+    means the directory itself is gone.
+  #>
+  param(
+    [string]$StateDirectory,
+    [string]$TransactionDirectory,
+    [string]$StateRelativePath = ''
+  )
+
+  $preserved = New-Object System.Collections.ArrayList
+  $problems = New-Object System.Collections.ArrayList
+
+  if (-not (Test-Path -LiteralPath $TransactionDirectory -PathType Container)) {
+    return (New-ToolkitJsonObject -Properties @{ Removed = $true; Preserved = @(); Problems = @() })
+  }
+  $relative = [string]$StateRelativePath
+  if ([string]::IsNullOrEmpty($relative)) {
+    $prefix = [System.IO.Path]::GetFullPath($StateDirectory).TrimEnd('\').Length + 1
+    $full = [System.IO.Path]::GetFullPath($TransactionDirectory)
+    if (-not $full.StartsWith(([System.IO.Path]::GetFullPath($StateDirectory).TrimEnd('\') + '\'), [StringComparison]::OrdinalIgnoreCase)) {
+      [void]$preserved.Add($full)
+      [void]$problems.Add('refused to touch a transaction directory outside the state directory: ' + (Get-ToolkitSafePath -Path $full))
+      return (New-ToolkitJsonObject -Properties @{ Removed = $false; Preserved = $preserved.ToArray(); Problems = $problems.ToArray() })
+    }
+    $relative = $full.Substring($prefix).Replace('\', '/')
+  }
+
+  $owned = Get-ToolkitTransactionOwnedPaths -TransactionDirectory $TransactionDirectory
+  if (-not [bool]$owned.Ok) {
+    # No readable journal: nothing inside can be justified. An empty directory still goes.
+    $children = @(Get-ChildItem -LiteralPath $TransactionDirectory -Force -Recurse -ErrorAction SilentlyContinue)
+    if ($children.Count -eq 0) {
+      try { Remove-Item -LiteralPath $TransactionDirectory -Force; return (New-ToolkitJsonObject -Properties @{ Removed = $true; Preserved = @(); Problems = @() }) }
+      catch { }
+    }
+    [void]$preserved.Add($relative)
+    [void]$problems.Add('preserved transaction evidence whose journal is unreadable: ' + (Get-ToolkitSafePath -Path $relative))
+    return (New-ToolkitJsonObject -Properties @{ Removed = $false; Preserved = $preserved.ToArray(); Problems = $problems.ToArray() })
+  }
+
+  $result = Remove-ToolkitStateEvidenceSubtree -StateDirectory $StateDirectory -RelativeRoot $relative -ProvenRelativePaths @($owned.Paths) -Origin 'transaction'
+  foreach ($entry in @($result.Preserved)) { [void]$preserved.Add([string]$entry) }
+  foreach ($problem in @($result.Problems)) { [void]$problems.Add([string]$problem) }
+  $stillThere = Test-Path -LiteralPath $TransactionDirectory
+  return (New-ToolkitJsonObject -Properties @{ Removed = (-not $stillThere); Preserved = $preserved.ToArray(); Problems = $problems.ToArray() })
+}
+
 function Remove-ToolkitTransactionDirectory {
   param($Transaction)
 
@@ -1918,8 +2047,16 @@ function Remove-ToolkitTransactionDirectory {
     return
   }
   try {
+    $stateDirectory = [string]$Transaction.StateDirectory
     if (Test-Path -LiteralPath ([string]$Transaction.Directory)) {
-      Remove-Item -LiteralPath ([string]$Transaction.Directory) -Recurse -Force -ErrorAction SilentlyContinue
+      $result = Remove-ToolkitProvenTransactionDirectory -StateDirectory $stateDirectory -TransactionDirectory ([string]$Transaction.Directory)
+      foreach ($problem in @($result.Problems)) { Write-ToolkitLine ('Transaction cleanup: ' + [string]$problem) 'Warn' }
+      if (-not [bool]$result.Removed -and @($result.Preserved).Count -gt 0) {
+        Write-ToolkitLine ('Preserved content inside the transaction directory that the toolkit cannot prove it created: ' + @($result.Preserved).Count) 'Warn'
+        foreach ($entry in @($result.Preserved)) {
+          Write-ToolkitLine ('  keep     ' + (Get-ToolkitSafePath -Path (Join-Path $script:TKStateDirectory ([string]$entry))))
+        }
+      }
     }
     $txnRoot = Join-Path $Transaction.StateDirectory $script:TKTxnDirectoryName
     $remainingTxn = @(Get-ChildItem -LiteralPath $txnRoot -Force -ErrorAction SilentlyContinue)
@@ -1927,7 +2064,10 @@ function Remove-ToolkitTransactionDirectory {
       Remove-Item -LiteralPath $txnRoot -Force -ErrorAction SilentlyContinue
     }
   }
-  catch { }
+  catch {
+    # Never silent: a failure here must surface, and preservation must still be reported.
+    Write-ToolkitLine ('Transaction cleanup failed (evidence may have been kept): ' + (Get-ToolkitSafeText -Text $_.Exception.Message)) 'Warn'
+  }
 }
 
 function Backup-ToolkitFile {
@@ -1954,7 +2094,9 @@ function Backup-ToolkitFile {
   try { $originalWriteTime = (Get-Item -LiteralPath $SourcePath).LastWriteTimeUtc.ToString('o') } catch { $originalWriteTime = '' }
   [void](Add-ToolkitJournalBackup -Transaction $Transaction -RelativePath $RelativePath -WriteTime $originalWriteTime)
 
-  # The pristine baseline is part of the same transaction: it must be restorable too.
+  # The pristine baseline is part of the same transaction: it must be restorable too. Reading it
+  # happens through state/pristine, so that root must be safe even for this caller.
+  Test-ToolkitStatePristineRootSafe -StateDirectory ([string]$Transaction.StateDirectory)
   $pristinePath = Get-ToolkitPristineFullPath -StateDirectory $Transaction.StateDirectory -RelativePath $RelativePath
   if (Test-Path -LiteralPath $pristinePath -PathType Leaf) {
     $pristineBackup = Join-Path $Transaction.BackupDirectory ('pristine\' + (ConvertTo-ToolkitNativePath -RelativePath $RelativePath))
@@ -2044,6 +2186,12 @@ function Invoke-ToolkitRollback {
 
   $problems = New-Object System.Collections.ArrayList
   if ($null -eq $Transaction) { return $problems.ToArray() }
+
+  # NEW-1: rollback restores pristine baselines (write), deletes them (created files) and sweeps
+  # pristine directories, so every state sub-root must be safe before it touches any of them. This
+  # function is reachable from Invoke-ToolkitOrphanRecovery, which also pre-checks; keeping the
+  # guard here means a direct caller cannot bypass it.
+  [void](Assert-ToolkitStateRootsSafe -StateDirectory ([string]$Transaction.StateDirectory))
 
   # 0. validate the whole journal before acting on any of it
   $validated = Get-ToolkitValidatedJournal -TargetRoot $TargetRoot -Journal $Transaction.Journal
@@ -2320,6 +2468,11 @@ function Remove-ToolkitStrayTemps {
   )
 
   $problems = New-Object System.Collections.ArrayList
+  # NEW-1: this sweep may read a pristine baseline as its trusted reference, so state/pristine must
+  # be a real directory before anything here runs (the function is also reachable on its own).
+  if (-not [string]::IsNullOrEmpty($StateDirectory)) {
+    Test-ToolkitStatePristineRootSafe -StateDirectory $StateDirectory
+  }
   foreach ($record in @($Plan)) {
     $relative = [string](Get-ToolkitMember -Object $record -Name 'path' -Default '')
     if ([string]::IsNullOrEmpty($relative)) { continue }
@@ -3057,6 +3210,14 @@ function Invoke-ToolkitInstallAction {
     Throw-ToolkitFailure -ExitCode $script:TKExitManifest -Message 'The toolkit state path exists but is not a directory.' -Detail ('path=' + (Get-ToolkitSafePath -Path $stateDirectory))
   }
 
+  # NEW-1: one unified pre-check of every state sub-root before this run reads, writes or replays
+  # anything. A root occupied by a file is reported here and preserved (NEW-2); a reparse point
+  # fails closed with remediation.
+  $occupiedStateRoots = @(Assert-ToolkitStateRootsSafe -StateDirectory $stateDirectory)
+  foreach ($occupiedRoot in $occupiedStateRoots) {
+    Write-ToolkitLine ('The state root "' + [string]$occupiedRoot + '" is occupied by a file, not a directory; it is preserved and will be reported, never deleted.') 'Warn'
+  }
+
   $ownershipManifest = $null
   $stateDirectoryHasLeftoversOnly = $false
   if ($null -ne $stateItem) {
@@ -3368,7 +3529,14 @@ function Invoke-ToolkitInstallAction {
     Remove-ToolkitTransactionDirectory -Transaction $transaction
     if ($createdState -and $removeCreatedState -and -not ($script:TKTestKeepTransaction -and $script:TKTestMode)) {
       try {
-        Remove-ToolkitStateInternals -StateDirectory $stateDirectory
+        # SAFE-01: only content this run's plan proves is toolkit-owned may go; anything a user
+        # dropped into the state directory meanwhile is preserved and reported.
+        $provenPaths = @()
+        if ($null -ne $plan) { $provenPaths = @($plan.Operations | ForEach-Object { [string]$_.path }) }
+        $stateCleanup = Remove-ToolkitStateInternals -StateDirectory $stateDirectory -ProvenManagedPaths $provenPaths
+        foreach ($entry in @($stateCleanup.Preserved)) {
+          Write-ToolkitLine ('Preserved content the toolkit cannot prove it created: ' + (Get-ToolkitSafePath -Path (Join-Path $script:TKStateDirectory ([string]$entry)))) 'Warn'
+        }
         $remaining = @(Get-ChildItem -LiteralPath $stateDirectory -Force -ErrorAction SilentlyContinue)
         if ($remaining.Count -eq 0) { Remove-Item -LiteralPath $stateDirectory -Force }
       }
@@ -3530,6 +3698,14 @@ function Invoke-ToolkitUninstallAction {
   $ownershipManifestPath = Join-Path $stateDirectory $script:TKManifestName
   Assert-ToolkitNoReparseInPath -Root $targetRoot -RelativePath $script:TKStateDirectory
 
+  # NEW-1: one unified pre-check of every state sub-root before the uninstall reads ownership
+  # evidence, rolls anything back or cleans up. A root occupied by a file is reported and
+  # preserved (NEW-2); a reparse point fails closed with remediation.
+  $occupiedStateRoots = @(Assert-ToolkitStateRootsSafe -StateDirectory $stateDirectory)
+  foreach ($occupiedRoot in $occupiedStateRoots) {
+    Write-ToolkitLine ('The state root "' + [string]$occupiedRoot + '" is occupied by a file, not a directory; it is preserved and will be reported, never deleted.') 'Warn'
+  }
+
   if (-not (Test-Path -LiteralPath $ownershipManifestPath -PathType Leaf)) {
     Throw-ToolkitFailure -ExitCode $script:TKExitManifest -Message 'No ownership manifest found: the toolkit cannot prove what it installed, so nothing will be deleted.' -Detail ('path=' + (Get-ToolkitSafePath -Path $stateDirectory))
   }
@@ -3649,8 +3825,23 @@ function Invoke-ToolkitUninstallAction {
     # and recorded as a reported residual instead of being silently lost.
     if (Test-Path -LiteralPath $quarantine -PathType Container) {
       $quarantinePrefix = [System.IO.Path]::GetFullPath($quarantine).TrimEnd('\').Length + 1
+      # SAFE-01: only files this transaction quarantined from a planned managed path are proven
+      # toolkit-owned. Anything else found in the quarantine directory is user content: it is
+      # preserved, reported and keeps its ownership evidence.
+      $quarantinedPaths = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+      foreach ($record in @($plan.Deletable)) {
+        $planned = ([string]$record.path).Replace('\', '/').Trim('/')
+        if (-not [string]::IsNullOrEmpty($planned)) { [void]$quarantinedPaths.Add($planned) }
+      }
       foreach ($quarantined in @(Get-ChildItem -LiteralPath $quarantine -Recurse -Force -File -ErrorAction SilentlyContinue)) {
         $relative = $quarantined.FullName.Substring($quarantinePrefix).Replace('\', '/')
+        if (-not $quarantinedPaths.Contains($relative)) {
+          # MINOR-2: this file was not quarantined by this transaction, so it is not a managed
+          # project-relative path. Report it, but never write it into the reduced ownership ledger
+          # (that would fabricate an ownership record and inflate the kept-evidence count).
+          Write-ToolkitLine ('Preserved unproven content in the quarantine directory: ' + (Get-ToolkitSafePath -Path $relative)) 'Warn'
+          continue
+        }
         try {
           Remove-Item -LiteralPath $quarantined.FullName -Force -ErrorAction Stop
         }
@@ -3751,22 +3942,58 @@ function Invoke-ToolkitUninstallAction {
     # A partial uninstall keeps a reduced ownership ledger, so the state directory survives and
     # must keep both its self-ignore boundary and the pristine evidence that ledger references.
     # Without this a later uninstall could no longer prove ownership of the retained files.
+    #
+    # SAFE-01: the full (pre-uninstall) ledger is the authority for what the toolkit ever owned,
+    # so its paths may have their pristine copies pruned; anything else found under the state
+    # directory is user content and is preserved and reported.
     $stateSurvives = ($leftovers.Count -gt 0) -or $keepEvidence -or ($unknown.Count -gt 0)
-    if ($stateSurvives) {
-      $referencedPristine = New-Object System.Collections.ArrayList
-      foreach ($record in @($leftovers)) {
-        $relative = ([string](Get-ToolkitMember -Object $record -Name 'path' -Default '')).Replace('\', '/').Trim('/')
-        if ([string]::IsNullOrEmpty($relative)) { continue }
-        [void]$referencedPristine.Add($relative)
+    $referencedPristine = New-Object System.Collections.ArrayList
+    foreach ($record in @($leftovers)) {
+      $relative = ([string](Get-ToolkitMember -Object $record -Name 'path' -Default '')).Replace('\', '/').Trim('/')
+      if ([string]::IsNullOrEmpty($relative)) { continue }
+      [void]$referencedPristine.Add($relative)
+    }
+    $provenManaged = New-Object System.Collections.ArrayList
+    foreach ($file in @($ownershipManifest.files)) {
+      $relative = ([string](Get-ToolkitMember -Object $file -Name 'path' -Default '')).Replace('\', '/').Trim('/')
+      if ([string]::IsNullOrEmpty($relative)) { continue }
+      [void]$provenManaged.Add($relative)
+    }
+    # MAJOR-1: when this run deliberately keeps transaction evidence for manual reconciliation,
+    # the state cleanup must not touch that very transaction directory (it would delete the
+    # journal, the ledger backup and the retained quarantine original while the finally block
+    # reports that the evidence was kept). Excluding its relative root keeps the report truthful.
+    $preserveRoots = New-Object System.Collections.ArrayList
+    if ($keepEvidence -and $null -ne $transaction -and -not [string]::IsNullOrEmpty([string]$transaction.Directory)) {
+      $stateFull = [System.IO.Path]::GetFullPath($stateDirectory).TrimEnd('\')
+      $transactionFull = [System.IO.Path]::GetFullPath([string]$transaction.Directory)
+      if ($transactionFull.StartsWith(($stateFull + '\'), [StringComparison]::OrdinalIgnoreCase)) {
+        [void]$preserveRoots.Add($transactionFull.Substring($stateFull.Length + 1).Replace('\', '/'))
+        Write-ToolkitLine ('Keeping this transaction''s evidence untouched: ' + (Get-ToolkitSafePath -Path ([string]$transaction.Directory))) 'Warn'
       }
-      Remove-ToolkitStateInternals -StateDirectory $stateDirectory -KeepDirectory:$true -PreserveEvidence -ReferencedManagedPaths $referencedPristine.ToArray()
+    }
+    if ($stateSurvives) {
+      $stateCleanup = Remove-ToolkitStateInternals -StateDirectory $stateDirectory -KeepDirectory:$true -PreserveEvidence `
+        -ReferencedManagedPaths $referencedPristine.ToArray() -ProvenManagedPaths $provenManaged.ToArray() `
+        -PreserveRelativeRoots $preserveRoots.ToArray()
+    }
+    else {
+      $stateCleanup = Remove-ToolkitStateInternals -StateDirectory $stateDirectory -KeepDirectory:$true `
+        -ProvenManagedPaths $provenManaged.ToArray() -PreserveRelativeRoots $preserveRoots.ToArray()
+    }
+    foreach ($problem in @($stateCleanup.Problems)) { Write-ToolkitLine ('State cleanup: ' + [string]$problem) 'Warn' }
+    if (@($stateCleanup.Preserved).Count -gt 0) {
+      Write-ToolkitLine ('Preserved state-directory content the toolkit cannot prove it created: ' + @($stateCleanup.Preserved).Count) 'Warn'
+      foreach ($entry in @($stateCleanup.Preserved)) {
+        Write-ToolkitLine ('  keep     ' + (Get-ToolkitSafePath -Path (Join-Path $script:TKStateDirectory ([string]$entry))))
+      }
+      Write-ToolkitLine 'Anything the toolkit cannot prove it created or installed is never deleted.' 'Warn'
+    }
+    if ($stateSurvives) {
       $keptPristine = @(Get-ChildItem -LiteralPath (Join-Path $stateDirectory $script:TKPristineDirectoryName) -Recurse -Force -File -ErrorAction SilentlyContinue).Count
       if ($keptPristine -gt 0) {
         Write-ToolkitLine ('Ownership evidence kept: ' + $keptPristine + ' pristine baseline(s) and the state .gitignore stay with the reduced ledger.') 'Warn'
       }
-    }
-    else {
-      Remove-ToolkitStateInternals -StateDirectory $stateDirectory -KeepDirectory:$true
     }
     if (-not $stateSurvives) {
       # deferred to the finally block: the exclusive lock file is still held right now
@@ -3806,14 +4033,28 @@ function Invoke-ToolkitUninstallAction {
       Remove-ToolkitTransactionDirectory -Transaction $transaction
     }
     elseif ($null -ne $transaction) {
-      Write-ToolkitLine ('Transaction evidence kept for manual reconciliation at ' + (Get-ToolkitSafePath -Path ([string]$transaction.Directory))) 'Warn'
+      # NEW-3: only claim the evidence was kept while it is actually still on disk. On the catch
+      # path Remove-ToolkitTransactionDirectory may already have removed it, and a stale flag must
+      # never produce a "kept" line that is not true.
+      if (Test-Path -LiteralPath ([string]$transaction.Directory)) {
+        Write-ToolkitLine ('Transaction evidence kept for manual reconciliation at ' + (Get-ToolkitSafePath -Path ([string]$transaction.Directory))) 'Warn'
+      }
+      else {
+        Write-ToolkitLine 'Transaction cleanup already removed the transaction directory; no evidence needed to be kept.' 'Warn'
+      }
     }
     if ($removeEmptyStateDirectory) {
       try {
-        # only provably empty toolkit-owned subdirectories are removed, never recursively
-        foreach ($sub in @('engine', $script:TKTxnDirectoryName, $script:TKQuarantineDirectoryName, 'backup')) {
+        # only provably empty toolkit-owned subdirectories are removed, never recursively; a
+        # reparse point is refused here too (NEW-1 class closure for the deferred sweep).
+        foreach ($sub in @(Get-ToolkitStateRootNames)) {
           $subPath = Join-Path $stateDirectory $sub
           if (-not (Test-Path -LiteralPath $subPath -PathType Container)) { continue }
+          $subItem = Get-ToolkitItemOrNull -Path $subPath
+          if (Test-ToolkitReparseItem -Item $subItem) {
+            Write-ToolkitLine ('Refusing to enumerate a state root that is a symlink / junction / reparse point: ' + (Get-ToolkitSafePath -Path $sub)) 'Warn'
+            continue
+          }
           $children = @(Get-ChildItem -LiteralPath $subPath -Force -ErrorAction SilentlyContinue)
           if ($children.Count -eq 0) { Remove-Item -LiteralPath $subPath -Force }
         }
@@ -3829,58 +4070,414 @@ function Invoke-ToolkitUninstallAction {
   }
 }
 
+function Remove-ToolkitStateEvidenceSubtree {
+  <#
+    SAFE-01: a toolkit-owned *name* does not make its descendants toolkit-owned.
+
+    Deletes only the files below a state sub-tree whose relative path is explained by toolkit
+    evidence ($ProvenRelativePaths); everything else is preserved and returned so the caller can
+    report it. Paths in $ReferencedRelativePaths are deliberately retained evidence: they are kept
+    without being reported as unprovable content. Directories are removed only when they end up
+    empty (never recursively), and a reparse point is refused instead of followed.
+
+    Returns @{ Removed; Preserved; Problems } where Preserved holds paths relative to the state
+    directory.
+  #>
+  param(
+    [string]$StateDirectory,
+    [string]$RelativeRoot,
+    [object[]]$ProvenRelativePaths = @(),
+    [object[]]$ReferencedRelativePaths = @(),
+    [string]$Origin = 'state'
+  )
+
+  $removed = 0
+  $preserved = New-Object System.Collections.ArrayList
+  $problems = New-Object System.Collections.ArrayList
+
+  $root = Join-Path $StateDirectory (ConvertTo-ToolkitNativePath -RelativePath $RelativeRoot)
+  if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+    return (New-ToolkitJsonObject -Properties @{ Removed = 0; Preserved = @(); Problems = @() })
+  }
+  $rootItem = Get-ToolkitItemOrNull -Path $root
+  if (Test-ToolkitReparseItem -Item $rootItem) {
+    [void]$preserved.Add($RelativeRoot)
+    [void]$problems.Add('refused to descend into a reparse point under the state directory: ' + (Get-ToolkitSafePath -Path $RelativeRoot))
+    return (New-ToolkitJsonObject -Properties @{ Removed = 0; Preserved = $preserved.ToArray(); Problems = $problems.ToArray() })
+  }
+
+  $proven = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+  foreach ($entry in @($ProvenRelativePaths)) {
+    $normalized = ([string]$entry).Replace('\', '/').Trim('/')
+    if (-not [string]::IsNullOrEmpty($normalized)) { [void]$proven.Add($normalized) }
+  }
+  $deliberatelyKept = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+  foreach ($entry in @($ReferencedRelativePaths)) {
+    $normalized = ([string]$entry).Replace('\', '/').Trim('/')
+    if (-not [string]::IsNullOrEmpty($normalized)) { [void]$deliberatelyKept.Add($normalized) }
+  }
+
+  $prefix = [System.IO.Path]::GetFullPath($root).TrimEnd('\').Length + 1
+  $files = @(Get-ChildItem -LiteralPath $root -Recurse -Force -File -ErrorAction SilentlyContinue | Sort-Object { $_.FullName.Length } -Descending)
+  foreach ($file in $files) {
+    $relativeInside = $file.FullName.Substring($prefix).Replace('\', '/')
+    $stateRelative = ($RelativeRoot.Trim('/') + '/' + $relativeInside)
+    if (Test-ToolkitReparseItem -Item $file) {
+      [void]$preserved.Add($stateRelative)
+      [void]$problems.Add('preserved a reparse point under the state directory: ' + (Get-ToolkitSafePath -Path $stateRelative))
+      continue
+    }
+    if ($deliberatelyKept.Contains($relativeInside)) {
+      # retained on purpose (for example the baseline the reduced ledger references): keep it
+      # without reporting it as content the toolkit cannot prove it created.
+      continue
+    }
+    if (-not $proven.Contains($relativeInside)) {
+      [void]$preserved.Add($stateRelative)
+      continue
+    }
+    try {
+      Remove-Item -LiteralPath $file.FullName -Force -ErrorAction Stop
+      $removed++
+    }
+    catch {
+      [void]$preserved.Add($stateRelative)
+      [void]$problems.Add('could not remove proven state content ' + (Get-ToolkitSafePath -Path $stateRelative) + ': ' + (Get-ToolkitSafeText -Text $_.Exception.Message))
+    }
+  }
+
+  # A directory may only go when it is proven empty; reparse points are never followed.
+  $directories = @(Get-ChildItem -LiteralPath $root -Recurse -Force -Directory -ErrorAction SilentlyContinue | Sort-Object { $_.FullName.Length } -Descending)
+  foreach ($directory in $directories) {
+    if (Test-ToolkitReparseItem -Item $directory) {
+      [void]$preserved.Add(($RelativeRoot.Trim('/') + '/' + $directory.FullName.Substring($prefix).Replace('\', '/')))
+      continue
+    }
+    try {
+      $children = @(Get-ChildItem -LiteralPath $directory.FullName -Force -ErrorAction SilentlyContinue)
+      if ($children.Count -eq 0) { Remove-Item -LiteralPath $directory.FullName -Force }
+    }
+    catch { }
+  }
+  try {
+    $remaining = @(Get-ChildItem -LiteralPath $root -Force -ErrorAction SilentlyContinue)
+    if ($remaining.Count -eq 0) { Remove-Item -LiteralPath $root -Force }
+  }
+  catch { }
+
+  return (New-ToolkitJsonObject -Properties @{ Removed = $removed; Preserved = $preserved.ToArray(); Problems = $problems.ToArray() })
+}
+
+function Get-ToolkitTransactionOwnedPaths {
+  <#
+    The files a transaction directory may contain, derived from its own journal: the journal and
+    its lock are always toolkit evidence, and the backup/quarantine entries exist only for the
+    managed paths that journal recorded. Anything else inside the directory is not explained by
+    toolkit evidence and must be preserved.
+  #>
+  param([string]$TransactionDirectory)
+
+  $owned = New-Object System.Collections.ArrayList
+  [void]$owned.Add('journal.json')
+  [void]$owned.Add('journal.json.lock')
+  $journalPath = Join-Path $TransactionDirectory 'journal.json'
+  if (-not (Test-Path -LiteralPath $journalPath -PathType Leaf)) {
+    return (New-ToolkitJsonObject -Properties @{ Ok = $false; Paths = @() })
+  }
+  $journal = $null
+  try {
+    $journal = Read-ToolkitJsonFile -Path $journalPath -ExitCode $script:TKExitRollback -What 'Transaction journal'
+  }
+  catch {
+    return (New-ToolkitJsonObject -Properties @{ Ok = $false; Paths = @() })
+  }
+  $kind = [string](Get-ToolkitMember -Object $journal -Name 'kind' -Default '')
+  $state = [string](Get-ToolkitMember -Object $journal -Name 'state' -Default '')
+  # The ledger's own transaction backup only exists when this transaction recorded one.
+  if ([bool](Get-ToolkitMember -Object $journal -Name 'manifestBackup' -Default $false)) {
+    [void]$owned.Add('backup/ownership-manifest.json')
+  }
+  # Backup-ToolkitFile writes the target copy under backup/<path> and the pristine copy under
+  # backup/pristine/<path> inside the transaction directory; staged[] records project-relative
+  # temporary paths, which never live here.
+  foreach ($record in @(Get-ToolkitMember -Object $journal -Name 'backups' -Default @())) {
+    $relative = ([string](Get-ToolkitMember -Object $record -Name 'path' -Default '')).Replace('\', '/').Trim('/')
+    if (-not [string]::IsNullOrEmpty($relative)) { [void]$owned.Add('backup/' + $relative) }
+  }
+  foreach ($record in @(Get-ToolkitMember -Object $journal -Name 'pristineBackups' -Default @())) {
+    $relative = ([string](Get-ToolkitMember -Object $record -Name 'path' -Default '')).Replace('\', '/').Trim('/')
+    if (-not [string]::IsNullOrEmpty($relative)) { [void]$owned.Add('backup/pristine/' + $relative) }
+  }
+  # Only an uninstall transaction in the 'started' state quarantines managed files that recovery
+  # will move back into the project; an install never uses quarantine. A *committed* transaction's
+  # quarantine holds the originals a previous run may have promised to keep for manual
+  # reconciliation (NEW-4), so those files are evidence and must be preserved, not treated as
+  # proven garbage.
+  if ($kind -eq 'uninstall' -and $state -eq 'started') {
+    foreach ($record in @(Get-ToolkitMember -Object $journal -Name 'plan' -Default @())) {
+      $relative = ([string](Get-ToolkitMember -Object $record -Name 'path' -Default '')).Replace('\', '/').Trim('/')
+      if (-not [string]::IsNullOrEmpty($relative)) { [void]$owned.Add('quarantine/' + $relative) }
+    }
+  }
+  return (New-ToolkitJsonObject -Properties @{ Ok = $true; Paths = $owned.ToArray() })
+}
+
+function Get-ToolkitStateRootNames {
+  <#
+    The toolkit-owned sub-roots of the state directory. Every one of them is a place the toolkit
+    reads, writes, enumerates or deletes inside, so each must be validated before use.
+  #>
+  return @($script:TKTxnDirectoryName, $script:TKQuarantineDirectoryName, 'backup', $script:TKPristineDirectoryName, 'engine')
+}
+
+function Assert-ToolkitStateRootSafe {
+  <#
+    NEW-1 / MAJOR-2: a reparse point at a toolkit state *root* (txn/, quarantine/, backup/,
+    pristine/, engine/) must be refused before anything enumerates, reads, writes or deletes
+    under it. Get-ChildItem / Remove-Item / Copy-Item would follow a junction and the operation
+    could land outside the state directory, so this fails closed (exit 3) instead.
+  #>
+  param(
+    [string]$StateDirectory,
+    [string]$RelativeRoot
+  )
+
+  $path = Join-Path $StateDirectory (ConvertTo-ToolkitNativePath -RelativePath $RelativeRoot)
+  if (-not (Test-Path -LiteralPath $path)) { return }
+  $item = Get-ToolkitItemOrNull -Path $path
+  if (Test-ToolkitReparseItem -Item $item) {
+    Throw-ToolkitFailure -ExitCode $script:TKExitBlocked `
+      -Message ('The state directory contains a symlink / junction / reparse point at "' + $RelativeRoot + '"; refusing to read, write, enumerate or clean it so nothing outside the state directory can be touched.') `
+      -Detail ('Remediation: replace ' + (Get-ToolkitSafePath -Path (Join-Path $script:TKStateDirectory $RelativeRoot)) + ' with a real directory (or move the link aside), then retry. Nothing was changed.')
+  }
+}
+
+function Assert-ToolkitStateRootsSafe {
+  <#
+    NEW-1: the single unified pre-check. Once a path has resolved the state directory it validates
+    every toolkit state sub-root at once, so a future caller cannot forget one.
+
+    * a reparse point anywhere in the set fails closed (exit 3), with a remediation line;
+    * a root occupied by something that is not a directory is returned to the caller so it can be
+      reported and preserved (NEW-2) instead of being silently ignored.
+
+    Returns the list of root names occupied by a non-directory.
+  #>
+  param([string]$StateDirectory)
+
+  $occupied = New-Object System.Collections.ArrayList
+  foreach ($rootName in @(Get-ToolkitStateRootNames)) {
+    Assert-ToolkitStateRootSafe -StateDirectory $StateDirectory -RelativeRoot $rootName
+    $path = Join-Path $StateDirectory (ConvertTo-ToolkitNativePath -RelativePath $rootName)
+    if (-not (Test-Path -LiteralPath $path)) { continue }
+    $item = Get-ToolkitItemOrNull -Path $path
+    if ($null -ne $item -and -not ($item -is [System.IO.DirectoryInfo])) {
+      [void]$occupied.Add($rootName)
+    }
+  }
+  return $occupied.ToArray()
+}
+
 function Remove-ToolkitStateInternals {
   <#
-    Removes the toolkit-owned working files inside the state directory.
+    Removes toolkit-owned working files inside the state directory.
 
-    -PreserveEvidence keeps the two things a *surviving* state directory still needs:
-      * the self-ignoring .gitignore, so the retained state never shows up in the user's Git
-        status; and
-      * the pristine baseline referenced by every entry of the (possibly reduced) ownership
-        ledger, so a later run can still re-prove ownership and remove the retained file once
-        its bytes match again.
-    Only when the state directory is being removed entirely may the pristine evidence go.
+    SAFE-01: every deletion is justified per item. A path that merely *looks* like a toolkit name
+    (pristine/, txn/, quarantine/, backup/) never authorises removing its descendants:
+
+      * a pristine baseline is removable only when its managed path is explained by the ledger
+        ($ProvenManagedPaths) or by transaction evidence;
+      * a transaction directory is inspected file by file and only content named by its own
+        journal may go; an unreadable journal means the whole directory is preserved;
+      * the state .gitignore is removable only while it is still byte-identical to what the
+        toolkit generated;
+      * a reparse point is refused, never followed;
+      * directories are removed only when they are proven empty.
+
+    Everything that cannot be justified is preserved and returned so the caller can report it.
+
+    -PreserveEvidence keeps the two things a *surviving* state directory still needs: the
+    self-ignoring .gitignore, and the pristine baseline referenced by every entry of the
+    (possibly reduced) ownership ledger.
   #>
   param(
     [string]$StateDirectory,
     [switch]$KeepDirectory,
     [switch]$PreserveEvidence,
-    [object[]]$ReferencedManagedPaths = @()
+    [object[]]$ReferencedManagedPaths = @(),
+    [object[]]$ProvenManagedPaths = @(),
+    [object[]]$PreserveRelativeRoots = @()
   )
 
-  $names = @($script:TKLockName, $script:TKLogName, $script:TKTxnDirectoryName, 'backup', $script:TKQuarantineDirectoryName)
-  if (-not $PreserveEvidence) {
-    $names += @($script:TKStateGitIgnoreName, $script:TKPristineDirectoryName)
+  $preserved = New-Object System.Collections.ArrayList
+  $problems = New-Object System.Collections.ArrayList
+
+  # --- NEW-1/MAJOR-2: refuse a reparse point at every state root before enumerating anything ----
+  # NEW-2: a root occupied by a regular file (or anything that is not a directory) is not deleted,
+  # but it must be reported and must keep the state directory's self-ignore boundary alive.
+  $occupiedRoots = @(Assert-ToolkitStateRootsSafe -StateDirectory $StateDirectory)
+  foreach ($occupied in $occupiedRoots) {
+    [void]$preserved.Add([string]$occupied)
+    [void]$problems.Add('preserved a file that occupies the toolkit state root name "' + [string]$occupied + '" instead of a directory: ' + (Get-ToolkitSafePath -Path (Join-Path $script:TKStateDirectory ([string]$occupied))))
   }
-  foreach ($name in $names) {
+
+  # --- subtrees this run deliberately keeps (MAJOR-1: the current transaction's evidence) ------
+  $keepRoots = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+  foreach ($entry in @($PreserveRelativeRoots)) {
+    $normalized = ([string]$entry).Replace('\', '/').Trim('/')
+    if (-not [string]::IsNullOrEmpty($normalized)) { [void]$keepRoots.Add($normalized) }
+  }
+
+  # --- top-level single toolkit working files ------------------------------------------------
+  # The lock is still held by this very process at cleanup time, so its removal is deliberately
+  # left to the lock-release sweep in the caller's finally block (it is a single toolkit file,
+  # never a subtree). The log is attempted here and a failure is reported, never swallowed.
+  foreach ($name in @($script:TKLockName, $script:TKLogName)) {
     $path = Join-Path $StateDirectory $name
-    if (Test-Path -LiteralPath $path) {
-      try { Remove-Item -LiteralPath $path -Recurse -Force } catch { }
+    if (-not (Test-Path -LiteralPath $path)) { continue }
+    if (-not (Test-ToolkitPathIsRegularFile -Path $path)) {
+      # a directory / reparse point where a toolkit file belongs is not toolkit content
+      [void]$preserved.Add($name)
+      continue
     }
+    if ($name -eq $script:TKLockName) { continue }
+    try { Remove-Item -LiteralPath $path -Force -ErrorAction Stop }
+    catch {
+      [void]$problems.Add('could not remove ' + (Get-ToolkitSafePath -Path $name) + ' during state cleanup: ' + (Get-ToolkitSafeText -Text $_.Exception.Message))
+    }
+  }
+
+  # --- the self-ignoring state .gitignore ----------------------------------------------------
+  $gitIgnorePath = Join-Path $StateDirectory $script:TKStateGitIgnoreName
+  if ((Test-Path -LiteralPath $gitIgnorePath -PathType Leaf) -and -not $PreserveEvidence) {
+    $generated = Join-Path $StateDirectory ('.gitignore-expected-' + [Guid]::NewGuid().ToString('n'))
+    $justified = $false
+    try {
+      Write-ToolkitTextFileDurable -Path $generated -Content (Get-ToolkitStateGitIgnoreContent)
+      $justified = Test-ToolkitFileContentEqual -PathA $gitIgnorePath -PathB $generated
+    }
+    catch { $justified = $false }
+    finally {
+      if (Test-Path -LiteralPath $generated) { Remove-Item -LiteralPath $generated -Force -ErrorAction SilentlyContinue }
+    }
+    if ($justified) {
+      try { Remove-Item -LiteralPath $gitIgnorePath -Force -ErrorAction Stop }
+      catch { [void]$preserved.Add($script:TKStateGitIgnoreName) }
+    }
+    else {
+      # a user-edited self-ignore file is preserved and reported
+      [void]$preserved.Add($script:TKStateGitIgnoreName)
+    }
+  }
+
+  # --- pristine baselines: per-file proof ----------------------------------------------------
+  $referenced = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+  foreach ($entry in @($ReferencedManagedPaths)) {
+    $normalized = ([string]$entry).Replace('\', '/').Trim('/')
+    if (-not [string]::IsNullOrEmpty($normalized)) { [void]$referenced.Add($normalized) }
+  }
+  $prunable = New-Object System.Collections.ArrayList
+  foreach ($entry in @($ProvenManagedPaths)) {
+    $normalized = ([string]$entry).Replace('\', '/').Trim('/')
+    if ([string]::IsNullOrEmpty($normalized)) { continue }
+    if ($referenced.Contains($normalized)) { continue }
+    [void]$prunable.Add($normalized)
+  }
+  if ($PreserveEvidence) {
+    $pristineResult = Remove-ToolkitStateEvidenceSubtree -StateDirectory $StateDirectory `
+      -RelativeRoot $script:TKPristineDirectoryName -ProvenRelativePaths $prunable.ToArray() `
+      -ReferencedRelativePaths @($ReferencedManagedPaths) -Origin 'pristine'
+  }
+  else {
+    $pristineResult = Remove-ToolkitStateEvidenceSubtree -StateDirectory $StateDirectory `
+      -RelativeRoot $script:TKPristineDirectoryName -ProvenRelativePaths @($ProvenManagedPaths) `
+      -ReferencedRelativePaths @($ReferencedManagedPaths) -Origin 'pristine'
+  }
+  foreach ($entry in @($pristineResult.Preserved)) { [void]$preserved.Add([string]$entry) }
+  foreach ($problem in @($pristineResult.Problems)) { [void]$problems.Add([string]$problem) }
+
+  # --- engine/ (the installed engine copy) ---------------------------------------------------
+  # MINOR-1: this subtree is enumerated like any other, so a file the toolkit cannot prove it
+  # created is preserved and reported instead of being left unreported and unenumerated.
+  $engineProven = New-Object System.Collections.ArrayList
+  $engineReferenced = New-Object System.Collections.ArrayList
+  $enginePrefix = ($script:TKStateDirectory + '/engine/')
+  foreach ($entry in @($ProvenManagedPaths)) {
+    $normalized = ([string]$entry).Replace('\', '/').Trim('/')
+    if ($normalized.StartsWith($enginePrefix, [StringComparison]::OrdinalIgnoreCase)) {
+      [void]$engineProven.Add($normalized.Substring($enginePrefix.Length))
+    }
+  }
+  foreach ($entry in @($ReferencedManagedPaths)) {
+    $normalized = ([string]$entry).Replace('\', '/').Trim('/')
+    if ($normalized.StartsWith($enginePrefix, [StringComparison]::OrdinalIgnoreCase)) {
+      [void]$engineReferenced.Add($normalized.Substring($enginePrefix.Length))
+    }
+  }
+  $engineResult = Remove-ToolkitStateEvidenceSubtree -StateDirectory $StateDirectory `
+    -RelativeRoot 'engine' -ProvenRelativePaths $engineProven.ToArray() `
+    -ReferencedRelativePaths $engineReferenced.ToArray() -Origin 'engine'
+  foreach ($entry in @($engineResult.Preserved)) { [void]$preserved.Add([string]$entry) }
+  foreach ($problem in @($engineResult.Problems)) { [void]$problems.Add([string]$problem) }
+
+  # --- transaction directories: file-by-file proof from each journal -------------------------
+  $txnRoot = Join-Path $StateDirectory $script:TKTxnDirectoryName
+  if (Test-Path -LiteralPath $txnRoot -PathType Container) {
+    # MINOR-1: a plain file directly under txn/ is not transaction evidence; it is preserved and
+    # reported (the previous code only enumerated directories and silently left such files).
+    foreach ($txnFile in @(Get-ChildItem -LiteralPath $txnRoot -Force -File -ErrorAction SilentlyContinue | Sort-Object Name)) {
+      $txnFileRelative = ($script:TKTxnDirectoryName + '/' + $txnFile.Name)
+      [void]$preserved.Add($txnFileRelative)
+      [void]$problems.Add('preserved a file in the transaction directory that no journal explains: ' + (Get-ToolkitSafePath -Path $txnFileRelative))
+    }
+    foreach ($transactionDirectory in @(Get-ChildItem -LiteralPath $txnRoot -Force -Directory -ErrorAction SilentlyContinue | Sort-Object Name)) {
+      $transactionRelative = ($script:TKTxnDirectoryName + '/' + $transactionDirectory.Name)
+      if ($keepRoots.Contains($transactionRelative)) {
+        # MAJOR-1: this transaction's evidence is being kept deliberately (keepEvidence); the
+        # finally block reports it truthfully and nothing here may touch it.
+        continue
+      }
+      $owned = Get-ToolkitTransactionOwnedPaths -TransactionDirectory $transactionDirectory.FullName
+      if (-not [bool]$owned.Ok) {
+        # Without a readable journal nothing inside can be justified: keep the whole directory.
+        [void]$preserved.Add($transactionRelative)
+        [void]$problems.Add('preserved a transaction directory whose journal is unreadable: ' + (Get-ToolkitSafePath -Path $transactionRelative))
+        continue
+      }
+      $result = Remove-ToolkitStateEvidenceSubtree -StateDirectory $StateDirectory -RelativeRoot $transactionRelative -ProvenRelativePaths @($owned.Paths) -Origin 'transaction'
+      foreach ($entry in @($result.Preserved)) { [void]$preserved.Add([string]$entry) }
+      foreach ($problem in @($result.Problems)) { [void]$problems.Add([string]$problem) }
+    }
+    try {
+      $leftover = @(Get-ChildItem -LiteralPath $txnRoot -Force -ErrorAction SilentlyContinue)
+      if ($leftover.Count -eq 0) { Remove-Item -LiteralPath $txnRoot -Force }
+    }
+    catch { }
+  }
+
+  # --- legacy top-level quarantine / backup trees --------------------------------------------
+  # No journal names their content, so nothing inside them can be proven: they are preserved and
+  # reported rather than recursively deleted.
+  foreach ($legacyName in @($script:TKQuarantineDirectoryName, 'backup')) {
+    $legacyPath = Join-Path $StateDirectory $legacyName
+    if (-not (Test-Path -LiteralPath $legacyPath -PathType Container)) { continue }
+    $legacyChildren = @(Get-ChildItem -LiteralPath $legacyPath -Force -Recurse -ErrorAction SilentlyContinue)
+    if ($legacyChildren.Count -eq 0) {
+      try { Remove-Item -LiteralPath $legacyPath -Force } catch { }
+      continue
+    }
+    [void]$preserved.Add($legacyName)
+    [void]$problems.Add('preserved unproven content in the state directory: ' + (Get-ToolkitSafePath -Path $legacyName))
   }
 
   if ($PreserveEvidence) {
-    # Keep every pristine baseline the reduced ledger still points at; prune only unreferenced
-    # copies so the directory keeps mirroring the ledger that survives next to it. When the
-    # referenced set cannot be determined, keeping the whole directory is the safe choice.
-    $pristineRoot = Join-Path $StateDirectory $script:TKPristineDirectoryName
-    if (Test-Path -LiteralPath $pristineRoot -PathType Container) {
-      $keepAll = ($null -eq $ReferencedManagedPaths) -or (@($ReferencedManagedPaths).Count -eq 0)
-      if (-not $keepAll) {
-        $referenced = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
-        foreach ($entry in @($ReferencedManagedPaths)) {
-          $normalized = ([string]$entry).Replace('\', '/').Trim('/')
-          if (-not [string]::IsNullOrEmpty($normalized)) { [void]$referenced.Add($normalized) }
-        }
-        $prefix = [System.IO.Path]::GetFullPath($pristineRoot).TrimEnd('\').Length + 1
-        foreach ($file in @(Get-ChildItem -LiteralPath $pristineRoot -Recurse -Force -File -ErrorAction SilentlyContinue | Sort-Object { $_.FullName.Length } -Descending)) {
-          if ($referenced.Contains($file.FullName.Substring($prefix).Replace('\', '/'))) { continue }
-          try { Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue } catch { }
-        }
-        Remove-ToolkitEmptyPristineDirectories -StateDirectory $StateDirectory
-      }
-    }
     # The self-ignore boundary must survive as long as the state directory does.
+    Write-ToolkitStateGitIgnore -StateDirectory $StateDirectory
+  }
+  elseif (@($preserved.ToArray()).Count -gt 0 -and (Test-Path -LiteralPath $StateDirectory -PathType Container)) {
+    # Content the toolkit cannot prove it created is kept, so the state directory survives: it
+    # must keep its self-ignore boundary too, otherwise the preserved state would show up in the
+    # user's Git status. The .gitignore is toolkit-generated and safe to (re)write.
     Write-ToolkitStateGitIgnore -StateDirectory $StateDirectory
   }
 
@@ -3891,6 +4488,11 @@ function Remove-ToolkitStateInternals {
     }
     catch { }
   }
+
+  return (New-ToolkitJsonObject -Properties @{
+      Preserved = @($preserved.ToArray() | Sort-Object -Unique)
+      Problems  = $problems.ToArray()
+    })
 }
 
 function Get-ToolkitRelativeSubdirectories {

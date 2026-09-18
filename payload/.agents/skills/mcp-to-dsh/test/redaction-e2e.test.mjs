@@ -35,7 +35,16 @@ const FAKE_BEARER = "fake-bearer-0123456789abcdef";
 const FAKE_API_KEY = "sk-fake0123456789abcdefghij";
 const FAKE_ENV_VALUE = "fake-env-secret-value-0001";
 const FAKE_PASSWORD = "fake-password-value-0003";
-const FAKE_SECRETS = [FAKE_BEARER, FAKE_API_KEY, FAKE_ENV_VALUE, FAKE_PASSWORD];
+// SEC-01 shapes, assembled from parts so the publishable source carries no complete
+// token-shaped or private-key literal: a bare JWS (no field name, no header, no `Bearer`) and
+// a multi-line PEM body that must not survive the line-buffered writer.
+const FAKE_JWT = ["eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9", "eyJzdWIiOiJmYWtlLTAwMDEifQ", "ZmFrZXNpZ25hdHVyZTAwMDE"].join(".");
+const PEM_BEGIN_LINE = ["-----BEGIN", "RSA", "PRIVATE", "KEY-----"].join(" ");
+const PEM_END_LINE = ["-----END", "RSA", "PRIVATE", "KEY-----"].join(" ");
+const PEM_BODY = "MIIEowIBAAKCAQEAfakefakefakefakefakefakefakefake";
+const FAKE_SECRETS = [FAKE_BEARER, FAKE_API_KEY, FAKE_ENV_VALUE, FAKE_PASSWORD, FAKE_JWT, PEM_BODY];
+// A short, explicitly-sensitive value: protected by its NAME, not by a length threshold.
+const SHORT_PASSWORD_LINE = `password="ab"`;
 
 // A parent environment that carries every credential family the policy must strip.
 const PARENT_SECRET_ENV = {
@@ -97,7 +106,7 @@ function createFakeBridge({ writer = "redacted" } = {}) {
             sessionId,
             update: {
               sessionUpdate: "agent_message_chunk",
-              content: { type: "text", text: `agent said ${FAKE_API_KEY}` },
+              content: { type: "text", text: `agent said ${FAKE_API_KEY} and echoed ${FAKE_JWT}` },
             },
           },
           { ts: new Date().toISOString(), source: "dsh", kind: "turn_stop", sessionId, response: { stopReason: "end_turn" } },
@@ -105,7 +114,7 @@ function createFakeBridge({ writer = "redacted" } = {}) {
         const summary = {
           schema_version: 1,
           session_id: sessionId,
-          bridge_error: { message: `Authorization: Bearer ${FAKE_BEARER}` },
+          bridge_error: { message: `Authorization: Bearer ${FAKE_BEARER} / ${SHORT_PASSWORD_LINE} / ${FAKE_JWT}` },
         };
         if (writer === "redacted") {
           // 与 src/cli.mjs 完全一致：事件走 redactValue，summary 走 redactJson。
@@ -118,8 +127,9 @@ function createFakeBridge({ writer = "redacted" } = {}) {
           await writeFile(join(artifactDir, "events.jsonl"), `${eventLines}\n`, "utf8");
           await writeFile(join(artifactDir, "session-summary.json"), `${JSON.stringify(summary)}\n`, "utf8");
         }
-        child.stdout.emit("data", Buffer.from(`[bridge] echo ${FAKE_ENV_VALUE}\n`, "utf8"));
-        child.stderr.emit("data", Buffer.from(`[DSH:runtime] cookie=session=${FAKE_BEARER}\n`, "utf8"));
+        child.stdout.emit("data", Buffer.from(`[bridge] echo ${FAKE_ENV_VALUE} jwt ${FAKE_JWT}\n`, "utf8"));
+        // A multi-line PEM arrives in one chunk through the line-buffered redacting writer.
+        child.stderr.emit("data", Buffer.from(`[DSH:runtime] cookie=session=${FAKE_BEARER}\n${PEM_BEGIN_LINE}\n${PEM_BODY}\n${PEM_END_LINE}\nafter the block\n`, "utf8"));
         child.exitCode = exitCode;
         child.emit("close", exitCode, null);
       },
@@ -205,7 +215,7 @@ test("fake secret 不进入 child env、instruction、run manifest、HTTP 投影
       lifecycleAction: "spawn",
       taskId: "REDACTION-E2E",
       // The title is free text from the request and must be filtered as well.
-      title: `leaky title ${FAKE_API_KEY}`,
+      title: `leaky title ${FAKE_API_KEY} ${FAKE_JWT}`,
       allowTools: false,
     }),
   });
@@ -257,11 +267,25 @@ test("fake secret 不进入 child env、instruction、run manifest、HTTP 投影
   const stderrLog = await readFile(join(call.artifactDir, "bridge-stderr.log"), "utf8");
   assertNoSecretLeak(stdoutLog, FAKE_SECRETS, "bridge-stdout.log");
   assertNoSecretLeak(stderrLog, FAKE_SECRETS, "bridge-stderr.log");
+  // SEC-01: the multi-line PEM went through the real line-buffered writer, so the block is
+  // replaced by one marker and the surrounding text survives.
+  assert.equal(stderrLog.includes(PEM_BEGIN_LINE), false, "bridge-stderr.log 不得包含 PEM BEGIN");
+  assert.equal(stderrLog.includes(PEM_END_LINE), false, "bridge-stderr.log 不得包含 PEM END");
+  assert.equal(stderrLog.includes(PEM_BODY), false, "bridge-stderr.log 不得包含 PEM body");
+  assert.ok(stderrLog.includes("<REDACTED>"), "PEM 必须被 <REDACTED> 取代");
+  assert.ok(stderrLog.includes("after the block"), "PEM 之后的普通文本必须保留");
   // 其他 durable sink：control file、session summary、registry、monitor 控制文件。
   const controlFile = await readFile(join(call.artifactDir, "monitor-control.json"), "utf8").catch(() => "");
   assertNoSecretLeak(controlFile, FAKE_SECRETS, "monitor-control.json");
   const summaryFile = await readFile(join(call.artifactDir, "session-summary.json"), "utf8").catch(() => "");
   assertNoSecretLeak(summaryFile, FAKE_SECRETS, "session-summary.json");
+  // SEC-01: a short, explicitly-sensitive value is protected by its NAME, not by length.
+  assert.equal(summaryFile.includes(SHORT_PASSWORD_LINE), false, "短 password 值不得落入 session summary");
+  assert.ok(summaryFile.includes("<REDACTED>"), "短 password 值必须被 <REDACTED> 取代");
+  // SEC-01: the bare JWT reached the event projection and was removed there too.
+  const eventsFile = await readFile(join(call.artifactDir, "events.jsonl"), "utf8").catch(() => "");
+  assertNoSecretLeak(eventsFile, FAKE_SECRETS, "events.jsonl");
+  assert.ok(eventsFile.includes("agent said"), "普通事件文本必须保留");
   const registryFile = await readFile(join(root, "artifacts", "dsh-monitor", "agent-registry.json"), "utf8");
   assertNoSecretLeak(registryFile, FAKE_SECRETS, "agent-registry.json");
   assert.equal(registryFile.includes("access_token"), false, "registry 不得包含 access token");

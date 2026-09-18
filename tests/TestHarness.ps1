@@ -147,6 +147,60 @@ function Invoke-ToolkitTestNative {
   return (New-ToolkitJsonObject -Properties @{ ExitCode = $exitCode; Output = $output })
 }
 
+function Get-ToolkitTestInstallerExe {
+  <#
+    Returns a current thin installer EXE, rebuilding it when it is missing or older than its own
+    source/recipe (a stale shell must never be exercised by a test).
+  #>
+  $exePath = Join-Path $script:TKTestToolkitRoot 'CodexDshTeamToolkit.Install.exe'
+  $needsBuild = -not (Test-Path -LiteralPath $exePath -PathType Leaf)
+  if (-not $needsBuild) {
+    $freshness = Test-ReleaseInstallerFreshness -RepositoryRoot $script:TKTestToolkitRoot
+    if (-not [bool]$freshness.Fresh) {
+      Write-ToolkitTestNote ('rebuilding the thin installer EXE: ' + [string]$freshness.Reason)
+      $needsBuild = $true
+    }
+  }
+  if ($needsBuild) {
+    $build = Invoke-ToolkitTestCli -Arguments @('-Quiet') -EnginePath (Join-Path $script:TKTestToolkitRoot 'installer\Build-Installer.ps1')
+    if ($build.ExitCode -ne 0) {
+      throw ('The thin installer EXE could not be built (csc.exe prerequisite missing): ' + $build.Output)
+    }
+  }
+  if (-not (Test-Path -LiteralPath $exePath -PathType Leaf)) {
+    throw 'The thin installer EXE is missing after the build.'
+  }
+  return $exePath
+}
+
+function Invoke-ToolkitTestExe {
+  <#
+    Runs a thin EXE and returns its real process exit code plus combined output. A GUI-subsystem
+    EXE is not reliably waited for by a bare `&`, so the process object is used.
+  #>
+  param(
+    [string]$ExePath,
+    [string[]]$Arguments = @()
+  )
+
+  $outputFile = Join-Path ([System.IO.Path]::GetTempPath()) ('toolkit-exe-' + [Guid]::NewGuid().ToString('n') + '.txt')
+  $errorFile = Join-Path ([System.IO.Path]::GetTempPath()) ('toolkit-exe-' + [Guid]::NewGuid().ToString('n') + '.err')
+  try {
+    $process = Start-Process -FilePath $ExePath -ArgumentList $Arguments -Wait -PassThru -NoNewWindow `
+      -RedirectStandardOutput $outputFile -RedirectStandardError $errorFile
+    $combined = ''
+    foreach ($file in @($outputFile, $errorFile)) {
+      if (Test-Path -LiteralPath $file -PathType Leaf) {
+        $combined = $combined + (Get-Content -LiteralPath $file -Raw -Encoding UTF8)
+      }
+    }
+    return (New-ToolkitJsonObject -Properties @{ ExitCode = [int]$process.ExitCode; Output = $combined })
+  }
+  finally {
+    Remove-Item -LiteralPath $outputFile, $errorFile -Force -ErrorAction SilentlyContinue
+  }
+}
+
 function New-ToolkitTestDirectory {
   param([string]$Label = 'case')
 
@@ -455,7 +509,8 @@ function New-ToolkitTestPackage {
     [hashtable]$PayloadFiles,
     [switch]$WithoutEngine,
     [switch]$WithoutUninstaller,
-    [string]$UninstallerExePath = ''
+    [string]$UninstallerExePath = '',
+    [string]$InstallerExePath = ''
   )
 
   if ($null -eq $PayloadFiles) { $PayloadFiles = New-ToolkitTestPayload }
@@ -498,6 +553,16 @@ function New-ToolkitTestPackage {
         }))
   }
 
+  # The installer EXE sits at the PACKAGE ROOT (next to Install.cmd) and is deliberately NOT a
+  # managed entry: it is a launcher, never installed into a user project and never recorded in
+  # an ownership ledger.
+  if (-not [string]::IsNullOrEmpty($InstallerExePath)) {
+    if (-not (Test-Path -LiteralPath $InstallerExePath -PathType Leaf)) {
+      throw ('The real installer EXE was requested but not found: ' + (Get-ToolkitSafePath -Path $InstallerExePath))
+    }
+    Copy-Item -LiteralPath $InstallerExePath -Destination (Join-Path $Root 'CodexDshTeamToolkit.Install.exe') -Force
+  }
+
   $manifestPath = Join-Path $Root 'release-manifest.json'
   [void](New-ToolkitReleaseManifest -PackageRoot $Root -Version $Version -ManagedEntries $entries.ToArray() -Destination $manifestPath)
   return (New-ToolkitJsonObject -Properties @{
@@ -537,6 +602,8 @@ function New-ToolkitTestRepo {
   foreach ($relative in @(
       'Install.cmd', 'README.md', 'README.zh-CN.md', 'LICENSE', 'CHANGELOG.md',
       'install\Invoke-Toolkit.ps1',
+      'CodexDshTeamToolkit.Install.exe',
+      'installer\Build-Installer.ps1', 'installer\src\Installer.cs',
       'uninstaller\CodexDshTeamToolkit.Uninstall.exe',
       'uninstaller\Build-Uninstaller.ps1', 'uninstaller\src\Uninstaller.cs',
       'release\package-layout.json', 'release\payload-inventory.json', 'release\release-manifest.schema.json', 'release\ownership-manifest.schema.json',

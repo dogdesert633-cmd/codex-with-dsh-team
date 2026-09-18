@@ -423,3 +423,164 @@ test('findSecretLeaks / assertNoSecretLeak 是测试可用的断言', () => {
   assert.deepEqual(findSecretLeaks({ nested: [FAKE_BEARER] }, [FAKE_BEARER]), [FAKE_BEARER]);
   assert.throws(() => assertNoSecretLeak(`x ${FAKE_BEARER}`, [FAKE_BEARER], 'artifact'), /泄露了/);
 });
+
+// ---------------------------------------------------------------------------
+// SEC-01 regressions: bare JWT, short explicitly-sensitive values, multi-line PEM
+// ---------------------------------------------------------------------------
+
+// A synthetic JWS. The header is the base64url encoding of `{"alg":"HS256","typ":"JWT"}`;
+// the payload and signature are fake filler. Assembled from parts so the publishable source
+// carries no complete token-shaped literal.
+const JWT_PARTS = ['eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9', 'eyJzdWIiOiJmYWtlLTAwMDEifQ', 'ZmFrZXNpZ25hdHVyZTAwMDE'];
+const FAKE_JWT = JWT_PARTS.join('.');
+
+test('SEC-01: 裸 JWT 在自由文本、JSON 值内与 dispatch 路径上都被 redact', () => {
+  assert.equal(FAKE_JWT.startsWith('eyJ'), true, 'fixture 必须是 eyJ 形状');
+
+  // 1) Free text, with no field name / header / Bearer prefix.
+  const prose = `debug dump follows ${FAKE_JWT} end of dump`;
+  const out = redactText(prose);
+  assert.equal(out.includes(FAKE_JWT), false, '裸 JWT 必须被 redact');
+  assert.ok(out.includes(REDACTED));
+  assert.ok(out.includes('debug dump follows'));
+
+  // 2) The same value inside a JSON string value.
+  const json = redactJson({ sessionId: 's1', message: `hook rejected ${FAKE_JWT}` });
+  assert.equal(json.includes(FAKE_JWT), false, 'JSON message 内的 JWT 必须被 redact');
+  assert.deepEqual(redactValue({ message: FAKE_JWT }).message, REDACTED);
+  assert.equal(JSON.parse(json).sessionId, 's1');
+
+  // 3) Dispatch path, and the category is reported without the value.
+  const dispatched = redactForDispatch(`token rotation failed: ${FAKE_JWT}`);
+  assert.equal(dispatched.text.includes(FAKE_JWT), false, 'dispatch 路径必须 redact JWT');
+  assert.equal(dispatched.changed, true);
+  assert.ok(dispatched.categories.jwt >= 1, JSON.stringify(dispatched.categories));
+  assert.equal(JSON.stringify(dispatched.categories).includes(FAKE_JWT), false);
+
+  // 4) Ordinary dotted identifiers and sentences still survive.
+  for (const benign of [
+    'semver 1.2.3 and name.first.last are ordinary dotted identifiers',
+    'eyJ not-a-token because it has only two parts.here',
+    'the release is v1.0.0',
+  ]) {
+    assert.equal(redactText(benign), benign, `误伤普通文本: ${benign}`);
+  }
+});
+
+test('SEC-01: 明确敏感名字后的短值不再靠长度阈值放行', () => {
+  // A short, quoted, explicitly-sensitive value must not survive the dispatch path, which is
+  // the real exit that carried the audit finding.
+  const dispatched = redactForDispatch('password="abc"');
+  assert.equal(dispatched.text.includes('abc'), false, '短 password 值必须被 redact');
+  assert.equal(dispatched.changed, true);
+
+  const shortValues = [
+    ['password="abc"', 'abc'],
+    ["password='abc'", 'abc'],
+    ['password = abc', 'abc'],
+    ['pwd: abc', 'abc'],
+    ['secret: s3cr3t', 's3cr3t'],
+    ['apiKey="xy12"', 'xy12'],
+    ['token: t0k', 't0k'],
+    ['passphrase: p@ss', 'p@ss'],
+    ['privateKey: k1', 'k1'],
+    ['PASSWORD=abc', 'abc'],
+    ['MY_TOKEN=tok1234', 'tok1234'],
+    ['{"client_secret":"abc"}', 'abc'],
+  ];
+  for (const [input, value] of shortValues) {
+    const output = redactText(input);
+    assert.equal(output.includes(value), false, `短敏感值必须被 redact: ${input}`);
+    assert.ok(output.includes(REDACTED), `缺少 ${REDACTED}: ${input}`);
+  }
+
+  // The denied NAME is what protects the value; a non-sensitive name with a short value is
+  // still ordinary text, and the long-value heuristic is unchanged for it.
+  for (const benign of [
+    'model = gpt-x',
+    'count = 42',
+    'reasoningEffort: low',
+  ]) {
+    assert.equal(redactText(benign), benign, `误伤普通键值: ${benign}`);
+  }
+});
+
+test('SEC-01: 多行 PEM 经 line writer 跨行、跨 chunk、未闭合与超长时都不回显', () => {
+  const collect = () => {
+    const chunks = [];
+    const sink = new Writable({
+      write(chunk, _encoding, callback) { chunks.push(chunk.toString('utf8')); callback(); },
+    });
+    return { chunks, sink };
+  };
+  const begin = ['-----BEGIN', 'RSA', 'PRIVATE', 'KEY-----'].join(' ');
+  const end = ['-----END', 'RSA', 'PRIVATE', 'KEY-----'].join(' ');
+  const body = 'MIIEowIBAAKCAQEAfakefakefakefakefakefakefakefake';
+
+  // 1) One chunk, block spread over several lines.
+  {
+    const { chunks, sink } = collect();
+    const writer = createRedactingLineWriter(sink);
+    writer.write(`before\n${begin}\n${body}\n${end}\nafter\n`);
+    writer.end();
+    const output = chunks.join('');
+    assert.equal(output.includes(body), false, '同一 chunk 的多行 PEM body 不得回显');
+    assert.equal(output.includes('-----BEGIN'), false);
+    assert.ok(output.includes('before'));
+    assert.ok(output.includes('after'));
+    assert.ok(output.includes(REDACTED));
+  }
+
+  // 2) Split across several chunks, including a chunk boundary inside the END marker.
+  {
+    const { chunks, sink } = collect();
+    const writer = createRedactingLineWriter(sink);
+    const whole = `head\n${begin}\n${body}\n${end}\ntail\n`;
+    const cuts = [8, 40, whole.length - 6, whole.length - 3];
+    let offset = 0;
+    for (const cut of cuts) {
+      writer.write(whole.slice(offset, cut));
+      offset = cut;
+    }
+    writer.write(whole.slice(offset));
+    writer.end();
+    const output = chunks.join('');
+    assert.equal(output.includes(body), false, '跨 chunk 的多行 PEM body 不得回显');
+    assert.ok(output.includes('head'));
+    assert.ok(output.includes('tail'));
+  }
+
+  // 3) Never closed before end(): the identified body must be dropped, not flushed.
+  {
+    const { chunks, sink } = collect();
+    const writer = createRedactingLineWriter(sink);
+    writer.write(`head\n${begin}\n${body}\nmore secret body\n`);
+    writer.end();
+    const output = chunks.join('');
+    assert.equal(output.includes(body), false, '未闭合 PEM body 不得回显');
+    assert.equal(output.includes('more secret body'), false, '未闭合 PEM 的后续 body 不得回显');
+    assert.ok(output.includes('head'));
+    assert.ok(output.includes(REDACTED));
+  }
+
+  // 4) Body larger than maxTailChars, closed in a later chunk.
+  {
+    const { chunks, sink } = collect();
+    const writer = createRedactingLineWriter(sink, { maxTailChars: 16 });
+    const huge = 'A'.repeat(4096);
+    writer.write(`${begin}\n`);
+    for (let i = 0; i < 8; i += 1) writer.write(`${huge}\n`);
+    writer.write(`${end}\nafter huge block\n`);
+    writer.end();
+    const output = chunks.join('');
+    assert.equal(output.includes(huge), false, '超过 maxTailChars 的 PEM body 不得回显');
+    assert.equal(output.includes('A'.repeat(64)), false, '任何 body 片段都不得回显');
+    assert.ok(output.includes('after huge block'));
+  }
+
+  // 5) The same block shape through a single redactText call (unclosed → to end of text).
+  {
+    const unclosed = redactText(`${begin}\n${body}\n`);
+    assert.equal(unclosed.includes(body), false, 'redactText 对未闭合 PEM 也必须清理 body');
+  }
+});

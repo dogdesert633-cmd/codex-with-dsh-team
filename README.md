@@ -1,5 +1,7 @@
 # Codex × DSH Team Toolkit
 
+**English** | [简体中文](README.zh-CN.md)
+
 A GitHub-ready, Windows-only, offline installer for the **Codex × DSH team skills**
 (`codex-dsh-team` + `mcp-to-dsh`). It installs a small set of files into an existing
 project, keeps a per-project ownership ledger plus a pristine byte copy of exactly what it

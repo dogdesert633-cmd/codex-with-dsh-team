@@ -1,5 +1,7 @@
 # Codex × DSH Team Toolkit（中文说明）
 
+[English](README.md) | **简体中文**
+
 一个 GitHub-ready、仅面向 Windows、完全离线的安装器，用于把 **Codex × DSH 团队 Skill**
 （`codex-dsh-team` 与 `mcp-to-dsh`）安全地安装进一个已存在的项目。它只管理自己安装过的
 文件，为每个受管文件保留一份 pristine 原始字节副本作为归属证据，并且能够把这些文件

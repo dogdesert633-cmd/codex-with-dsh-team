@@ -422,31 +422,55 @@ function Get-ReleaseRequiredFiles {
     })
 }
 
-function Test-ReleaseUninstallerFreshness {
+function Test-ReleaseThinExeFreshness {
   <#
-    A release must never silently ship a stale thin EXE: the binary is compared against the
-    C# source and the build recipe it is supposed to come from.
+    A release must never silently ship a stale thin EXE: the binary is compared against the C#
+    source and the build recipe it is supposed to come from. Shared by the uninstaller and the
+    installer so both gates can never drift apart. No digest is involved: freshness is decided
+    from timestamps only.
   #>
-  param([string]$RepositoryRoot)
+  param(
+    [string]$RepositoryRoot,
+    [string]$ExePath,
+    [string]$SourcePath,
+    [string]$RecipePath,
+    [string]$Label
+  )
 
-  $exePath = Join-Path $RepositoryRoot 'uninstaller\CodexDshTeamToolkit.Uninstall.exe'
-  $sourcePath = Join-Path $RepositoryRoot 'uninstaller\src\Uninstaller.cs'
-  $recipePath = Join-Path $RepositoryRoot 'uninstaller\Build-Uninstaller.ps1'
-
-  if (-not (Test-Path -LiteralPath $exePath -PathType Leaf)) {
-    return (New-ToolkitJsonObject -Properties @{ Fresh = $false; Reason = 'the thin uninstaller EXE does not exist yet' })
+  if (-not (Test-Path -LiteralPath $ExePath -PathType Leaf)) {
+    return (New-ToolkitJsonObject -Properties @{ Fresh = $false; Reason = ('the thin ' + $Label + ' EXE does not exist yet') })
   }
-  $exeTime = (Get-Item -LiteralPath $exePath).LastWriteTimeUtc
-  foreach ($prerequisite in @($sourcePath, $recipePath)) {
+  $exeTime = (Get-Item -LiteralPath $ExePath).LastWriteTimeUtc
+  foreach ($prerequisite in @($SourcePath, $RecipePath)) {
     if (-not (Test-Path -LiteralPath $prerequisite -PathType Leaf)) { continue }
     if ((Get-Item -LiteralPath $prerequisite).LastWriteTimeUtc -gt $exeTime) {
       return (New-ToolkitJsonObject -Properties @{
           Fresh  = $false
-          Reason = ('the thin uninstaller EXE is older than ' + (Get-ReleaseRelativePath -Root $RepositoryRoot -Path $prerequisite))
+          Reason = ('the thin ' + $Label + ' EXE is older than ' + (Get-ReleaseRelativePath -Root $RepositoryRoot -Path $prerequisite))
         })
     }
   }
   return (New-ToolkitJsonObject -Properties @{ Fresh = $true; Reason = '' })
+}
+
+function Test-ReleaseUninstallerFreshness {
+  param([string]$RepositoryRoot)
+
+  return (Test-ReleaseThinExeFreshness -RepositoryRoot $RepositoryRoot `
+      -ExePath (Join-Path $RepositoryRoot 'uninstaller\CodexDshTeamToolkit.Uninstall.exe') `
+      -SourcePath (Join-Path $RepositoryRoot 'uninstaller\src\Uninstaller.cs') `
+      -RecipePath (Join-Path $RepositoryRoot 'uninstaller\Build-Uninstaller.ps1') `
+      -Label 'uninstaller')
+}
+
+function Test-ReleaseInstallerFreshness {
+  param([string]$RepositoryRoot)
+
+  return (Test-ReleaseThinExeFreshness -RepositoryRoot $RepositoryRoot `
+      -ExePath (Join-Path $RepositoryRoot 'CodexDshTeamToolkit.Install.exe') `
+      -SourcePath (Join-Path $RepositoryRoot 'installer\src\Installer.cs') `
+      -RecipePath (Join-Path $RepositoryRoot 'installer\Build-Installer.ps1') `
+      -Label 'installer')
 }
 
 function Invoke-ReleaseContentScan {

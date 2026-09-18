@@ -29,6 +29,8 @@ param(
   [switch]$SkipContentScan,
   [string[]]$ContentScanAllowlist = @(),
   [string]$PayloadInventory = '',
+  [switch]$BuildInstaller,
+  [switch]$AllowStaleInstaller,
   [switch]$BuildUninstaller,
   [switch]$AllowStaleUninstaller,
   [switch]$Quiet
@@ -110,10 +112,29 @@ foreach ($relative in @(Get-ToolkitMember -Object $layout -Name 'packageOnly' -D
 }
 if ($missing.Count -gt 0) {
   foreach ($entry in $missing) { Write-BuildLine ('Missing required package file: ' + (Get-ToolkitSafePath -Path $entry)) 'Error' }
-  Exit-BuildFailure 'Build stopped: the package layout is incomplete (the thin uninstaller EXE is built by uninstaller/Build-Uninstaller.ps1).'
+  Exit-BuildFailure 'Build stopped: the package layout is incomplete (the thin EXEs are built by installer/Build-Installer.ps1 and uninstaller/Build-Uninstaller.ps1).'
 }
 
 # A release must never silently reuse a stale thin EXE: rebuild it here, or fail visibly.
+# The installer and the uninstaller are symmetric gates.
+$installerRecipe = Join-Path $RepoRoot 'installer\Build-Installer.ps1'
+if ($BuildInstaller) {
+  Write-BuildLine 'Rebuilding the thin installer EXE as part of this release build.'
+  & $installerRecipe -Quiet
+  if ($LASTEXITCODE -ne 0) {
+    Exit-BuildFailure ('Build stopped: the thin installer EXE could not be rebuilt (exit ' + $LASTEXITCODE + '). The previous artifacts were left untouched.')
+  }
+}
+$installerFreshness = Test-ReleaseInstallerFreshness -RepositoryRoot $RepoRoot
+if (-not [bool]$installerFreshness.Fresh -and -not $AllowStaleInstaller) {
+  Write-BuildLine ('Build stopped: ' + [string]$installerFreshness.Reason + '.') 'Error'
+  Write-BuildLine 'Run installer/Build-Installer.ps1 first (or pass -BuildInstaller to do it here). Pass -AllowStaleInstaller only when you know the binary is current.' 'Error'
+  Exit-BuildFailure
+}
+if (-not [bool]$installerFreshness.Fresh) {
+  Write-BuildLine ('Proceeding with a possibly stale thin installer EXE because -AllowStaleInstaller was passed: ' + [string]$installerFreshness.Reason) 'Warn'
+}
+
 $uninstallerRecipe = Join-Path $RepoRoot 'uninstaller\Build-Uninstaller.ps1'
 if ($BuildUninstaller) {
   Write-BuildLine 'Rebuilding the thin uninstaller EXE as part of this release build.'
@@ -393,6 +414,7 @@ $report = New-ToolkitJsonObject -Properties @{
   undeclaredPayload = @($undeclaredPayload)
   contentScan       = $contentScan
   zip               = $zipName
+  installerFresh    = [bool]$installerFreshness.Fresh
   uninstallerFresh  = [bool]$freshness.Fresh
   checksumArtifacts = @()
   noHashContract    = 'no SHA256SUMS.txt, no .sha256 sidecar, no digest field in release metadata'

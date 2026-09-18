@@ -24,10 +24,15 @@ sandbox.
 ## 2. What the toolkit never does
 
 - never elevates or requests elevation;
-- never uses the network;
+- never uses the network itself and sends no telemetry. This scopes the *toolkit*: installing,
+  upgrading, uninstalling, the maintainer build, Verify and the tests are offline. It does not
+  describe the AI tasks you run afterwards — see §6 "Data flow" for what leaves the machine then;
 - never modifies `PATH`, the registry, global PowerShell profiles, Git configuration, the
   project's `AGENTS.md` or any source file it does not own;
 - never installs dependencies;
+- never copies the package-root launchers (`CodexDshTeamToolkit.Install.exe`, `Install.cmd`) into
+  a project and never records them in the ownership ledger: they stay in the extracted package,
+  and only the files listed in `release-manifest.json` are ever managed;
 - never deletes a file it cannot prove it installed;
 - never recursively deletes `.agents`, a Skill directory, the toolkit state directory or any
   directory it merely *suspects* is safe;
@@ -143,12 +148,36 @@ the previous state is restored; the exit code is `6`, never a silent success.
 
 - **Deny-by-default**: the policy in §3 is applied to every release-manifest entry, ownership
   entry and uninstall path. A manifest that claims a credential store is refused.
+- **Data flow.** Three paths, and only the last one is external:
+  1. *Installer / upgrade / uninstall* — offline, no telemetry, no phone-home, no elevation.
+  2. *Maintainer build / Verify / tests* — offline, no push, no publish.
+  3. *First `npm ci` in the payload skill* — contacts the npm registry once for the pinned tree.
+  4. *Running actual AI tasks* — your prompt, repository context and task text are sent to the
+     **model provider configured in your DSH setup**. That traffic follows your provider account
+     and its terms and **may incur third-party cost**. It is your configuration, not toolkit
+     telemetry, and the toolkit neither adds to it nor proxies it.
+
+  What stays local: the ownership ledger, `pristine/` baselines, transaction journal/backups and
+  the Team Home all live under your project and the toolkit's owned runtime directory, and none
+  of them record file contents or credential values.
 - **No content capture**: the engine copies bytes and compares them byte for byte; it never
   parses, logs, prints or stores file contents. Plans and journals list *paths* only.
 - **Redaction before output and before persistence**: every message, plan line, journal note
-  and log line passes through the redaction filter (`<redacted>`), covering bearer/basic
-  headers, JWTs, `sk-`/`ghp_`/`xox`/`AKIA` keys, `key = "value"` pairs, and private key
-  blocks. Secret-shaped *path segments* are replaced as well.
+  and log line passes through the redaction filter (`<REDACTED>`). It removes value positions
+  that are explicitly named as sensitive (`password`/`passwd`/`pwd`, `secret`, `token`,
+  `api key`, `cookie`, `authorization`, private key, `passphrase` — including **short** values,
+  which are protected by the name rather than by any length rule), `Authorization`/`Cookie`
+  headers, bearer/basic credentials, `NAME=value` and `key: value` pairs, provider key shapes
+  (`sk-`/`ghp_`/`gho_`/`xox`/`AKIA`/`AIza`), bare JWTs (an `eyJ…` three-segment token, with no
+  field name, header or `Bearer` prefix required) and private-key blocks — including a PEM body
+  split across lines and stream chunks, an unterminated block, and an abnormally ended stream,
+  where the identified body is dropped rather than re-emitted. Secret-shaped *path segments*
+  are replaced as well.
+
+  This is **pattern-based detection, not a completeness guarantee**: it recognises known
+  sensitive names and shapes and cannot prove that an arbitrary secret was removed. The primary
+  control therefore remains that known sensitive sources are refused by the path policy and
+  never read or forwarded in the first place — see **Deny-by-default** above and §3.
 - **Path minimization**: the journal and the ownership ledger store relative paths only. No
   digest of the target root is computed or persisted, and an absolute personal path never
   appears in either.
@@ -163,11 +192,11 @@ the previous state is restored; the exit code is `6`, never a silent success.
   marker (`schema` = `codex-dsh-team-home/v1`, `toolkitId`, `installId`, `createdAt`,
   `purpose` = `dsh-team-runtime-home`). This is one contract shared verbatim with the Node
   runtime: the installer writes markers the runtime accepts, and the installer accepts markers
-  the runtime wrote. The superseded `.codex-dsh-team-runtime.json` marker is no longer
-  ownership proof — a directory carrying it alone is refused as unowned, a directory carrying
-  both markers is refused outright, and no migration is attempted. An existing directory
-  without a valid marker — or one that looks like a plain user DSH Home — is refused, never
-  adopted. The parent chain is checked for reparse points before any write.
+  the runtime wrote. Ownership proof is `.codex-dsh-team-home.json` only: a directory carrying
+  `.codex-dsh-team-runtime.json` alone is refused as unowned, a directory carrying
+  both markers is refused outright, and the engine never adopts or converts one. An existing
+  directory without a valid marker — or one that looks like a plain user DSH Home — is refused,
+  never adopted. The parent chain is checked for reparse points before any write.
 - **Credentials**: a credential is never copied into the project. Where the payload needs one
   inside the owned Team Home the copy is opaque, one-directional (user DSH Home → owned Team
   Home) and written atomically; if the target ACL cannot be tightened to the current user only,

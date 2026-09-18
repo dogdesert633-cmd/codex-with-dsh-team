@@ -287,7 +287,11 @@ function redactKnownValues(text) {
 const TEXT_TRIGGERS = Object.freeze([
   "token", "key", "secret", "password", "passwd", "pwd", "cookie",
   "credential", "authorization", "bearer", "basic ", "private",
+  "passphrase",
   "pem", "sk-", "ghp_", "gho_", "ghs_", "ghr_", "github_pat_", "akia", "aiza", "xox",
+  // A bare JWS/JWT carries no keyword of its own: the base64url header always starts with
+  // `eyJ` (the encoding of `{"`), so that prefix is the only trigger available.
+  "eyj",
 ]);
 
 function mayContainSecret(text) {
@@ -302,7 +306,14 @@ export const CREDENTIAL_VALUE_MIN_LENGTH = 8;
 const CREDENTIAL_CHARS = `[A-Za-z0-9._~+/=@:!$%^&*#-]{${CREDENTIAL_VALUE_MIN_LENGTH},}`;
 const CREDENTIAL_VALUE = `["']?${CREDENTIAL_CHARS}["']?`;
 
-const PRIVATE_KEY_BLOCK = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g;
+// A private-key block is redacted as one span. When the block is never closed the span runs
+// to the end of the text: the BEGIN marker already identified sensitive body bytes, so they
+// must not be re-emitted just because the END marker is missing.
+const PRIVATE_KEY_BLOCK = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/g;
+// A bare JWS/JWT: an `eyJ` header followed by two more dot-separated base64url segments.
+// No field name, `Authorization` header or `Bearer` prefix is required. The lookarounds keep
+// ordinary dotted identifiers (`foo.bar.baz`, `1.2.3`) and plain prose untouched.
+const JWT_SHAPE = /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{2,}\.[A-Za-z0-9_-]{2,}\.[A-Za-z0-9_-]{2,}(?![A-Za-z0-9_-])/g;
 // Header rules only fire when the line *ends* in something credential-shaped. A sentence
 // such as `Authorization: 不得以明文写入` is documentation and must survive untouched.
 const AUTHORIZATION_HEADER = new RegExp(`^([ \\t]*(?:proxy-)?authorization[ \\t]*:[ \\t]*)(?:(?:bearer|basic|token|apikey|digest)[ \\t]+)?(${CREDENTIAL_VALUE})[ \\t]*$`, "gim");
@@ -313,12 +324,23 @@ const KV_VALUE = new RegExp(
   `(^|[^A-Za-z0-9_.-])(["']?)([A-Za-z0-9_.-]*(?:api[_-]?key|apikey|token|secret|password|passwd|pwd|cookie|credential|private[_-]?key|passphrase)[A-Za-z0-9_.-]*)\\2([ \\t]*[:=][ \\t]*)(["']?)(${CREDENTIAL_CHARS})\\5`,
   "gi",
 );
+// The same explicit-name rule for a value SHORTER than CREDENTIAL_VALUE_MIN_LENGTH. The name
+// is already an explicitly sensitive one and the value is a single bare ASCII token (quoted or
+// not), so length is not the gate: `password="abc"` and `password = abc` are values.
+// Prose is untouched because `cookie: 只在同源 HttpOnly 场景使用`, `token=见上文` and
+// `password: 由 owned Team Home 的受控副本维持` fail the ASCII-token shape (space / CJK).
+const SHORT_EXPLICIT_VALUE = `[A-Za-z0-9._~+/=@:!$%^&*#-]{1,${CREDENTIAL_VALUE_MIN_LENGTH - 1}}`;
+const KV_VALUE_EXPLICIT_SHORT = new RegExp(
+  `(^|[^A-Za-z0-9_.-])(["']?)([A-Za-z0-9_.-]*(?:api[_-]?key|apikey|token|secret|password|passwd|pwd|cookie|credential|private[_-]?key|passphrase)[A-Za-z0-9_.-]*)\\2([ \\t]*[:=][ \\t]*)(["']?)(${SHORT_EXPLICIT_VALUE})\\5`,
+  "gi",
+);
 // `NAME=value` lines (.env / dotenv / exported shells). The name is judged by the same
 // deny policy as an environment variable, so `MY_KEY=…`, `APP_TOKEN=…` and
 // `SERVICE_PASSWORD=…` are removed while `model = <team-configured-fallback-model>` in a skill document is not,
 // and a documentation line such as `token=见上文` survives because its value is prose.
 const ENV_ASSIGNMENT = /^([ \t]*)([A-Za-z_][A-Za-z0-9_]*)([ \t]*=[ \t]*)(.*)$/gm;
 const CREDENTIAL_ASSIGNMENT_VALUE = new RegExp(`^${CREDENTIAL_VALUE}$`);
+const SHORT_ASSIGNMENT_VALUE = new RegExp(`^${SHORT_EXPLICIT_VALUE}$`);
 const PROVIDER_KEY_SHAPE = /\b(sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|xox[abprs]-[A-Za-z0-9-]{10,})\b/g;
 
 const TEXT_RULES = Object.freeze([
@@ -336,6 +358,14 @@ const TEXT_RULES = Object.freeze([
     },
   },
   {
+    category: "key-value-short",
+    pattern: KV_VALUE_EXPLICIT_SHORT,
+    replace: (_match, lead, keyQuote, key, separator, valueQuote) => {
+      if (isTelemetryName(normalizeName(key))) return _match;
+      return `${lead}${keyQuote}${key}${keyQuote}${separator}${valueQuote}${REDACTED}${valueQuote}`;
+    },
+  },
+  {
     category: "env-assignment",
     pattern: ENV_ASSIGNMENT,
     replace: (match, indent, name, separator, value) => {
@@ -343,12 +373,14 @@ const TEXT_RULES = Object.freeze([
       const trimmed = value.trim();
       if (trimmed === "" || trimmed === REDACTED) return match;
       if (!isDeniedEnvName(name) && !isDeniedKey(name)) return match;
-      // 只有凭据形状的值才替换：`token=见上文` 这类说明性赋值必须保持可读。
-      if (!CREDENTIAL_ASSIGNMENT_VALUE.test(trimmed)) return match;
+      // 明确敏感的名字由“名字”本身保护，长度不是门槛：凭据形状的值一律替换，短小但仍是
+      // 裸 ASCII token 的值同样替换。`token=见上文` 这类说明性赋值保持可读。
+      if (!CREDENTIAL_ASSIGNMENT_VALUE.test(trimmed) && !SHORT_ASSIGNMENT_VALUE.test(trimmed)) return match;
       return `${indent}${name}${separator}${REDACTED}`;
     },
   },
   { category: "provider-key-shape", pattern: PROVIDER_KEY_SHAPE, replace: () => REDACTED },
+  { category: "jwt", pattern: JWT_SHAPE, replace: () => REDACTED },
 ]);
 
 /**
@@ -469,9 +501,24 @@ export function redactJson(value, space) {
  * Raw protocol frames and child stderr are chunked arbitrarily, so redaction has to
  * happen per complete line; a partial trailing line is held back. An unbounded tail (a
  * single enormous frame) is flushed redacted instead of being buffered forever.
+ *
+ * Private-key blocks are stateful because a PEM body spans many lines and chunks: the BEGIN
+ * marker emits one `<REDACTED>` and switches the writer into "block open" mode, where the body
+ * is *dropped as it arrives* and only a bounded suffix is retained to recognise an END marker
+ * split across chunks. An unterminated block, an over-long body or an abnormal stream end can
+ * therefore never re-emit identified sensitive bytes, and memory stays bounded.
  */
 export function createRedactingLineWriter(sink, { maxTailChars = 256 * 1024 } = {}) {
+  // Enough to recognise an END marker split anywhere across two chunks (`-----END ` + name +
+  // ` PRIVATE KEY-----` is far shorter than this).
+  const PEM_LOOKBEHIND = 64;
+  const PEM_BEGIN = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/;
+  const PEM_END = /-----END [A-Z0-9 ]*PRIVATE KEY-----/;
+
   let pending = "";
+  let pemOpen = false;
+  let pemTail = "";
+
   const flushCompleteLines = () => {
     let index = pending.indexOf("\n");
     while (index >= 0) {
@@ -480,17 +527,60 @@ export function createRedactingLineWriter(sink, { maxTailChars = 256 * 1024 } = 
       index = pending.indexOf("\n");
     }
   };
+
+  const writeNormal = () => {
+    flushCompleteLines();
+    if (pending.length > maxTailChars) {
+      sink.write(redactText(pending));
+      pending = "";
+    }
+  };
+
+  const consume = () => {
+    for (;;) {
+      if (pemOpen) {
+        // The body is sensitive by definition: never emit it, keep only a bounded suffix.
+        const scan = pemTail + pending;
+        const end = PEM_END.exec(scan);
+        if (end === null) {
+          pemTail = scan.slice(-PEM_LOOKBEHIND);
+          pending = "";
+          return;
+        }
+        pending = scan.slice(end.index + end[0].length);
+        pemOpen = false;
+        pemTail = "";
+        continue;
+      }
+      const begin = PEM_BEGIN.exec(pending);
+      if (begin === null) {
+        writeNormal();
+        return;
+      }
+      const before = pending.slice(0, begin.index);
+      pending = pending.slice(begin.index + begin[0].length);
+      pemOpen = true;
+      pemTail = "";
+      if (before !== "") sink.write(redactText(before));
+      // One marker per block, emitted at the marker that identified it.
+      sink.write(REDACTED);
+    }
+  };
+
   return {
     write(chunk) {
       if (chunk === undefined || chunk === null) return;
       pending += typeof chunk === "string" ? chunk : chunk.toString("utf8");
-      flushCompleteLines();
-      if (pending.length > maxTailChars) {
-        sink.write(redactText(pending));
-        pending = "";
-      }
+      consume();
     },
     end() {
+      if (pemOpen) {
+        // Unterminated block: the body was dropped, so there is nothing left to emit.
+        pemOpen = false;
+        pemTail = "";
+        pending = "";
+        return;
+      }
       if (pending) {
         sink.write(redactText(pending));
         pending = "";

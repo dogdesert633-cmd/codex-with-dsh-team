@@ -209,6 +209,107 @@ Test-Case -Name 'recovery: an unrecognized staged temp name is never deleted' -B
   Remove-Item -LiteralPath $txnDirectory -Recurse -Force
 }
 
+Test-Case -Name 'recovery: a junction at the txn root is refused before anything is enumerated (MAJOR-2)' -Body {
+  $base = New-ToolkitTestDirectory -Label 'txn-junction'
+  $package = New-ToolkitTestPackage -Root (Join-Path $base 'package')
+  $project = New-ToolkitTestProject -Root (Join-Path $base 'project')
+  Assert-Equal 0 (Invoke-ToolkitTestCommand -Options @{ Action = 'Install'; Target = $project; PackageRoot = $package.Root }).ExitCode
+
+  $state = Join-Path $project '.codex-dsh-team-toolkit'
+  $outside = Join-Path $base 'outside'
+  New-Item -ItemType Directory -Path (Join-Path $outside 'decoy-transaction') -Force | Out-Null
+  $outsideFile = Join-Path $outside 'decoy-transaction\must-not-be-touched.txt'
+  Write-ToolkitTestFile -Path $outsideFile -Content "# outside the state directory`n"
+  $outsideCopy = Join-Path $base 'outside-before.txt'
+  Copy-Item -LiteralPath $outsideFile -Destination $outsideCopy -Force
+  $outsideSentinel = Join-Path $outside 'sentinel.txt'
+  Write-ToolkitTestFile -Path $outsideSentinel -Content 'sentinel'
+  $sentinelCopy = Join-Path $base 'sentinel-before.txt'
+  Copy-Item -LiteralPath $outsideSentinel -Destination $sentinelCopy -Force
+
+  # replace the (absent) transaction root with a junction that points outside the state directory
+  $txnRoot = Join-Path $state 'txn'
+  if (Test-Path -LiteralPath $txnRoot) { Remove-Item -LiteralPath $txnRoot -Recurse -Force }
+  New-Item -ItemType Junction -Path $txnRoot -Target $outside -ErrorAction SilentlyContinue | Out-Null
+  # NEW-6: the case must not be able to pass without exercising the guard. This host can create
+  # junctions; if it ever cannot, fail loudly here instead of reporting a green zero-coverage run.
+  Assert-DirectoryExists $txnRoot 'the junction fixture must really exist before the guard is exercised'
+  $junctionItem = Get-Item -LiteralPath $txnRoot -Force
+  Assert-True (($junctionItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) 'the fixture must really be a reparse point'
+
+  # 1) the uninstall path refuses fail-closed and never follows the junction
+  $uninstall = Invoke-ToolkitTestCommand -Options @{ Action = 'Uninstall'; Target = $project; Yes = $true }
+  Assert-True ($uninstall.ExitCode -ne 0) ('a junction at the txn root must stop the uninstall: ' + (Get-ToolkitTestOutput $uninstall))
+  Assert-Match (Get-ToolkitTestOutput $uninstall) 'reparse point' 'the refusal must name the reparse point'
+  Assert-True (Test-ToolkitFileContentEqual -PathA $outsideFile -PathB $outsideCopy) 'nothing outside the state directory may be modified'
+  Assert-True (Test-ToolkitFileContentEqual -PathA $outsideSentinel -PathB $sentinelCopy) 'nothing outside the state directory may be deleted'
+
+  # 2) the recovery entry point refuses too (it is used by install/upgrade)
+  $second = Invoke-ToolkitTestCommand -Options @{ Action = 'Install'; Target = $project; PackageRoot = $package.Root }
+  Assert-True ($second.ExitCode -ne 0) ('a junction at the txn root must stop the recovery path: ' + (Get-ToolkitTestOutput $second))
+  Assert-Match (Get-ToolkitTestOutput $second) 'reparse point' 'the recovery refusal must name the reparse point'
+  Assert-True (Test-ToolkitFileContentEqual -PathA $outsideFile -PathB $outsideCopy) 'the decoy transaction must still be intact'
+  Assert-True (Test-ToolkitFileContentEqual -PathA $outsideSentinel -PathB $sentinelCopy) 'the outside sentinel must still be intact'
+
+  # the junction itself is still there: the toolkit refuses, it does not delete the offending link
+  Assert-True (Test-Path -LiteralPath $txnRoot) 'the refusing run must leave the junction in place'
+}
+
+Test-Case -Name 'recovery: a junction at the pristine root is refused on every path that touches it (NEW-1)' -Body {
+  $base = New-ToolkitTestDirectory -Label 'pristine-junction'
+  $package = New-ToolkitTestPackage -Root (Join-Path $base 'package')
+  $project = New-ToolkitTestProject -Root (Join-Path $base 'project')
+  Assert-Equal 0 (Invoke-ToolkitTestCommand -Options @{ Action = 'Install'; Target = $project; PackageRoot = $package.Root }).ExitCode
+
+  $state = Join-Path $project '.codex-dsh-team-toolkit'
+  $pristineRoot = Join-Path $state 'pristine'
+  Assert-DirectoryExists $pristineRoot 'the install must have created a real pristine root'
+
+  # Decoys outside the state directory: a managed-name FILE (a pristine delete would hit it) and
+  # an EMPTY DIRECTORY (the empty-directory sweep would remove it if the junction were followed).
+  $outside = Join-Path $base 'outside-pristine'
+  New-Item -ItemType Directory -Path (Join-Path $outside 'decoy-empty') -Force | Out-Null
+  $decoyManagedName = Join-Path $outside 'start_dsh_team.cmd'
+  Write-ToolkitTestFile -Path $decoyManagedName -Content "@echo off`r`necho decoy`r`n"
+  $decoyCopy = Join-Path $base 'decoy-before.cmd'
+  Copy-Item -LiteralPath $decoyManagedName -Destination $decoyCopy -Force
+  $decoySentinel = Join-Path $outside 'sentinel.txt'
+  Write-ToolkitTestFile -Path $decoySentinel -Content 'outside sentinel'
+  $sentinelCopy = Join-Path $base 'sentinel-before.txt'
+  Copy-Item -LiteralPath $decoySentinel -Destination $sentinelCopy -Force
+
+  Remove-Item -LiteralPath $pristineRoot -Recurse -Force
+  New-Item -ItemType Junction -Path $pristineRoot -Target $outside -ErrorAction SilentlyContinue | Out-Null
+  Assert-DirectoryExists $pristineRoot 'the pristine junction fixture must really exist'
+  $junctionItem = Get-Item -LiteralPath $pristineRoot -Force
+  Assert-True (($junctionItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) 'the pristine fixture must really be a reparse point'
+
+  # 1) the orphan-recovery path (install/upgrade replaying a started transaction) must refuse
+  $txn = New-ToolkitTestJournalFor -StateDirectory $state -TargetRoot $project -Kind 'install' -JournalPaths @(
+    New-ToolkitJsonObject -Properties @{ path = 'start_dsh_team.cmd'; action = 'replace' }
+  )
+  $recovery = Invoke-ToolkitTestCommand -Options @{ Action = 'Install'; Target = $project; PackageRoot = $package.Root }
+  Assert-True ($recovery.ExitCode -ne 0) ('a junction at pristine must stop recovery: ' + (Get-ToolkitTestOutput $recovery))
+  Assert-Match (Get-ToolkitTestOutput $recovery) 'reparse point' 'the recovery refusal must name the reparse point'
+  Assert-Match (Get-ToolkitTestOutput $recovery) 'Remediation' 'the refusal must carry an actionable remediation (NEW-5)'
+  Assert-True (Test-ToolkitFileContentEqual -PathA $decoyManagedName -PathB $decoyCopy) 'the decoy file must not be deleted through the junction'
+  Assert-True (Test-ToolkitFileContentEqual -PathA $decoySentinel -PathB $sentinelCopy) 'the outside sentinel must be unchanged'
+  Assert-DirectoryExists (Join-Path $outside 'decoy-empty') 'an empty directory outside the state directory must not be removed through the junction'
+
+  # 2) the install-failure rollback path must refuse too (it also restores into pristine/)
+  $faulted = Invoke-ToolkitTestCommand -Options @{
+    Action = 'Install'; Target = $project; PackageRoot = $package.Root
+    TestFault = 'install.after-replace-first'; TestMode = $true
+  }
+  Assert-True ($faulted.ExitCode -ne 0) ('a junction at pristine must stop the failing-install rollback: ' + (Get-ToolkitTestOutput $faulted))
+  Assert-Match (Get-ToolkitTestOutput $faulted) 'reparse point' 'the rollback refusal must name the reparse point'
+  Assert-True (Test-ToolkitFileContentEqual -PathA $decoyManagedName -PathB $decoyCopy) 'the decoy file must survive the rollback path'
+  Assert-DirectoryExists (Join-Path $outside 'decoy-empty') 'the outside empty directory must survive the rollback path'
+
+  # the offending link is never deleted by a refusing run
+  Assert-DirectoryExists $pristineRoot 'the refusing runs must leave the junction in place'
+}
+
 Test-Case -Name 'recovery: duplicate JSON keys and malformed evidence are refused' -Body {
   $base = New-ToolkitTestDirectory -Label 'dup-json'
   $package = New-ToolkitTestPackage -Root (Join-Path $base 'package')

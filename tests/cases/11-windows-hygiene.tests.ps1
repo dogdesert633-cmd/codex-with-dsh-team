@@ -34,7 +34,7 @@ Test-Case -Name 'windows: every *.cmd is CRLF and pure ASCII, pinned by .gitattr
   Write-ToolkitTestNote ('checked ' + $cmdFiles.Count + ' *.cmd files')
 }
 
-Test-Case -Name 'windows: the thin EXE declares its version and the build pins the language level' -Body {
+Test-Case -Name 'windows: both thin EXEs declare their version and pin the language level' -Body {
   $exePath = Get-ToolkitTestUninstallerExe
   $reportPath = Join-Path $script:TKTestToolkitRoot 'uninstaller\build-report.json'
   Assert-FileExists $reportPath 'the EXE build must leave a fail-visible report'
@@ -49,6 +49,22 @@ Test-Case -Name 'windows: the thin EXE declares its version and the build pins t
   Assert-Match ([string]$version.ProductName) 'Codex x DSH Team Toolkit' 'the EXE must identify the product'
   $size = (Get-Item -LiteralPath $exePath).Length
   Assert-True ($size -lt 204800) ('the EXE must stay thin (actual ' + $size + ' bytes)')
+
+  # the installer EXE is symmetric: same build recipe, same language level, same metadata
+  $installerExe = Get-ToolkitTestInstallerExe
+  $installerReportPath = Join-Path $script:TKTestToolkitRoot 'installer\build-report.json'
+  Assert-FileExists $installerReportPath 'the installer build must leave a fail-visible report'
+  $installerReport = Get-Content -LiteralPath $installerReportPath -Raw | ConvertFrom-Json
+  Assert-Equal 'codex-dsh-team-toolkit/installer-build/v1' ([string]$installerReport.schema) 'the installer report must declare its own schema'
+  Assert-Equal 0 ([int]$installerReport.exitCode) 'the installer compiler exit code must be 0'
+  Assert-Equal '5' ([string]$installerReport.langVersion) 'the installer shell must be built as C# 5'
+  Assert-Equal '1.0.0.0' ([string]$installerReport.fileVersion) 'the installer EXE version must be aligned with the release'
+  $installerVersion = (Get-Item -LiteralPath $installerExe).VersionInfo
+  Assert-Equal '1.0.0.0' ([string]$installerVersion.FileVersion) 'the installer EXE must carry the release file version'
+  Assert-Match ([string]$installerVersion.ProductName) 'Codex x DSH Team Toolkit' 'the installer EXE must identify the product'
+  Assert-Match ([string]$installerVersion.FileDescription) 'Installer' 'the installer EXE must describe itself as the installer'
+  $installerSize = (Get-Item -LiteralPath $installerExe).Length
+  Assert-True ($installerSize -lt 204800) ('the installer EXE must stay thin (actual ' + $installerSize + ' bytes)')
 }
 
 Test-Case -Name 'release: a stale thin EXE is never reused silently' -Body {
@@ -68,6 +84,23 @@ Test-Case -Name 'release: a stale thin EXE is never reused silently' -Body {
   $overridden = Invoke-ToolkitTestBuildRelease -RepoRoot $repo -ExtraArguments @('-AllowStaleUninstaller', '-SkipZip')
   Assert-Equal 0 $overridden.ExitCode ('the explicit override must work: ' + $overridden.Output)
   Assert-Match $overridden.Output 'possibly stale thin EXE' 'the override must be announced'
+}
+
+Test-Case -Name 'release: a stale thin installer EXE is never reused silently either' -Body {
+  $base = New-ToolkitTestDirectory -Label 'stale-installer'
+  $repo = New-ToolkitTestRepo -Root (Join-Path $base 'repo')
+
+  $sourcePath = Join-Path $repo 'installer\src\Installer.cs'
+  (Get-Item -LiteralPath $sourcePath).LastWriteTimeUtc = (Get-Date).ToUniversalTime().AddMinutes(5)
+  $stale = Invoke-ToolkitTestBuildRelease -RepoRoot $repo
+  Assert-True ($stale.ExitCode -ne 0) 'a stale installer EXE must stop the build'
+  Assert-Match $stale.Output 'thin installer EXE is older than' 'the reason must name the installer'
+  Assert-Match $stale.Output 'Build-Installer' 'the message must name the installer recipe'
+  Assert-FileMissing (Join-Path $repo 'dist\codex-dsh-team-toolkit-v1.0.0.zip')
+
+  $overridden = Invoke-ToolkitTestBuildRelease -RepoRoot $repo -ExtraArguments @('-AllowStaleInstaller', '-SkipZip')
+  Assert-Equal 0 $overridden.ExitCode ('the explicit override must work: ' + $overridden.Output)
+  Assert-Match $overridden.Output 'possibly stale thin installer EXE' 'the override must be announced'
 }
 
 Test-Case -Name 'release: verify runs the secret and binding scan by default' -Body {

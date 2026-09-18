@@ -24,6 +24,9 @@
   ],
   "packageOnly": [
     "Install.cmd",
+    "CodexDshTeamToolkit.Install.exe",
+    "installer/Build-Installer.ps1",
+    "installer/src/Installer.cs",
     "README.md",
     "README.zh-CN.md",
     "LICENSE",
@@ -43,6 +46,9 @@
   ],
   "releaseMustContain": [
     "Install.cmd",
+    "CodexDshTeamToolkit.Install.exe",
+    "installer/Build-Installer.ps1",
+    "installer/src/Installer.cs",
     "install/Invoke-Toolkit.ps1",
     "uninstaller/CodexDshTeamToolkit.Uninstall.exe",
     "uninstaller/Build-Uninstaller.ps1",

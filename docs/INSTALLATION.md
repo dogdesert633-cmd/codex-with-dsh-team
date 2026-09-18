@@ -7,7 +7,7 @@
 | Windows 10 / 11 | Windows only. No Linux/macOS support. |
 | PowerShell 5.1 **or** PowerShell 7+ | `Install.cmd` prefers `pwsh.exe` and falls back to the in-box Windows PowerShell. |
 | An existing project directory | The toolkit never creates the target root. |
-| .NET Framework 4.x | Only needed to **build** the thin uninstaller EXE, not to run a release. |
+| .NET Framework 4.x | Ships with Windows 10/11. Needed to **build** the two thin launchers, and it is the framework the shipped launchers run on (they are framework-dependent). Not needed for the PowerShell engine itself. |
 | Node **≥ 22.19.0** | Only needed for the installed Team/Monitor runtime (the payload skills), not for the installer itself. `payload/.agents/skills/mcp-to-dsh/package.json` declares this in `engines.node`. |
 
 The installer engine needs no administrator rights, no network access and no package restore.
@@ -25,25 +25,39 @@ npm ci           # first install: uses package-lock.json for a reproducible tree
 
 Boundaries to be aware of:
 
-- `npm ci` is the only step that needs the network. Everything else in this project — install,
-  upgrade, uninstall, tests, release build and release verify — is offline.
+- The installer engine, the maintainer tools and the tests are offline. `npm ci` contacts the
+  npm registry once to materialise the pinned dependency tree.
+- The DSH runtime dependency is pinned and tested against **`@deepseek-ai/dsh 0.1.5-rc.1`**
+  (declared in the payload's `package.json`). Other DSH versions are untested rather than
+  unsupported: pin the version you validated.
 - Node ≥ 22.19.0 is required (see `engines.node`). An older Node fails visibly instead of
   running with an unsupported runtime.
 - `node_modules/**` is never part of a release package, is never installed by the installer and
   is never deleted by the uninstaller (it is untracked content, reported and kept).
-- The installer and the runtime share the Team Home marker contract, so an install prepared by
-  either side is recognised by the other without migration.
+- The installer and the runtime share the Team Home marker (`.codex-dsh-team-home.json`,
+  `codex-dsh-team-home/v1`), so an install prepared by either side is recognised by the other.
+  Any other marker file makes the directory refuse ownership rather than being adopted.
+
+### What leaves the machine during real AI work
+
+Installing, upgrading and uninstalling never use the network. When you actually run Team/Monitor
+AI tasks, your prompt, repository context and task text are sent to the **model provider
+configured in your DSH setup** — that traffic follows your provider account and terms and **may
+incur third-party cost**. That is your configuration, not toolkit telemetry: the toolkit itself
+sends nothing. Everything the toolkit records (ledger, `pristine/` baselines, journals, logs)
+stays on this machine and never contains file contents or credential values.
 
 ## Install with the folder picker (recommended)
 
 1. Extract the release package anywhere (for example `%USERPROFILE%\Downloads\codex-dsh-team-toolkit-v1.0.0`).
-2. Double-click **`Install.cmd`**.
+2. Double-click **`CodexDshTeamToolkit.Install.exe`** in the package root (the normal GUI entry),
+   or **`Install.cmd`** if you prefer the zero-dependency script.
 3. A Windows folder picker opens. Select the **existing** project root you want the toolkit
    installed into, then confirm.
 4. Read the per-file **Install Plan** that is printed before anything is written — no state
    directory, lock, runtime directory or other write happens before this point.
-5. Type `YES` to proceed (automation passes `-Yes`; a non-interactive run without it exits `8`
-   and writes nothing).
+5. Confirm to proceed (unattended runs pass `--yes` / `-Yes`; a non-interactive run without it
+   exits `8` and writes nothing).
 6. The install finishes with a summary of the managed files.
 
 Cancelling the folder picker exits immediately and writes nothing.
@@ -52,11 +66,17 @@ Cancelling the folder picker exits immediately and writes nothing.
 
 ```powershell
 # always start here: a plan with zero writes
+.\CodexDshTeamToolkit.Install.exe --target "D:\projects\my-project" --plan-only
 .\Install.cmd -Target "D:\projects\my-project" -PlanOnly
 
 # install or upgrade
+.\CodexDshTeamToolkit.Install.exe --target "D:\projects\my-project" --yes
 .\Install.cmd -Target "D:\projects\my-project"
 ```
+
+The installer EXE takes `--target <project>` (or a positional path), `--package <dir>` (default:
+its own directory), `--yes`, `--no-ui`, `--plan-only` and `--help`. It is a thin shell over the
+same engine and forwards the engine's exit code unchanged.
 
 Equivalent direct engine call:
 
@@ -80,6 +100,10 @@ Only the files listed in the package's `release-manifest.json`:
 Plus one ledger: `.codex-dsh-team-toolkit/manifest.json` (not a managed file — it *is* the
 record of the managed files).
 
+The package-root launchers (`CodexDshTeamToolkit.Install.exe`, `Install.cmd`) are deliberately
+**not** in that table: they live only in the extracted package, are never copied into your
+project and are never recorded in the ledger.
+
 Nothing else is created: no `PATH` change, no registry key, no global PowerShell profile, no
 `AGENTS.md` edit, no source modification, no dependency install.
 
@@ -90,7 +114,7 @@ Run the same command with a newer release package. An upgrade:
 - replaces only files that are still byte-identical to their **pristine baseline** (the exact
   bytes the toolkit installed, kept under `.codex-dsh-team-toolkit/pristine/`);
 - **blocks the whole upgrade** if any managed file was modified by hand (your file is kept);
-- keeps managed files that are no longer part of the release, still marked as owned;
+- keeps managed files that the new release does not contain, still marked as owned;
 - reports the new version in the ledger.
 
 Re-running the *same* release is a verified no-op: nothing is rewritten.
@@ -131,11 +155,16 @@ The uninstaller prints an Uninstall Plan, then deletes only ownership-proven fil
 
 ## Building a release yourself
 
-These commands are **maintainer tools for a source checkout only**: `tools/`, `tests/` and
-`uninstaller/src/` are repository artifacts and are not shipped inside a release package, so
-they do not exist in an extracted release.
+Most of these commands are **maintainer tools that need a source checkout**: `tools/`, `tests/`
+and `dist/` are repository artifacts and are not shipped inside a release package, so those
+commands do not exist in an extracted release. The launcher build recipes are the exception —
+`installer/Build-Installer.ps1` and `uninstaller/Build-Uninstaller.ps1`, together with their
+sources, ship with the package (see
+[release/package-layout.json](../release/package-layout.json)) so a reader can audit and rebuild
+the EXEs from an extracted package.
 
 ```powershell
+pwsh -File installer/Build-Installer.ps1                     # installer EXE (needs in-box csc.exe)
 pwsh -File uninstaller/Build-Uninstaller.ps1                 # thin EXE (needs in-box csc.exe)
 pwsh -File tests/Run-Tests.ps1                               # full safety suite
 pwsh -File tools/Build-Release.ps1 -Version 1.0.0            # dist/ package + zip (no checksum artefact)
@@ -146,7 +175,7 @@ The build is offline and never pushes anywhere. Useful properties:
 
 - `release/payload-inventory.json` is the **single, current inventory source** (`files` = runtime only), so a stray file in
   `payload/` can never be installed by accident (it is reported and excluded). A payload-side
-  `COPY_FILE_LIST.json` is deprecated and does not exist in this toolkit: it is never packaged,
+  `COPY_FILE_LIST.json` **does not exist** in this toolkit: it is never packaged,
   never installed and never consulted as an inventory;
 - everything is produced in a private staging directory and moved into place only when the
   package is complete: a failed build leaves the previous `dist/` artifacts untouched and

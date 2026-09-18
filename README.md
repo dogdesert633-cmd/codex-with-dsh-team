@@ -14,22 +14,23 @@ without ever touching your own work.
 
 ## Why it exists
 
-The previous v3.2.0 installer that shipped with the earlier internal package (it is not part
-of this repository) only ever *copied* files. It could not answer three questions that matter:
+Copying files into a project is easy. Copying files into a project *safely* means being able to
+answer three questions at any later point:
 
-| Question | Old installer | This toolkit |
-| --- | --- | --- |
-| Is this file ours, or did the user write it? | unknown | ownership ledger with the exact installed bytes kept as a `pristine/` copy per managed file |
-| What happens if the install dies halfway? | half-installed project | transactional: durable journal, backup, atomic replace, reverse rollback |
-| Can it be undone? | no | transactional uninstall that only deletes ownership-proven files |
+| Question | This toolkit |
+| --- | --- |
+| Is this file ours, or did the user write it? | ownership ledger with the exact installed bytes kept as a `pristine/` copy per managed file |
+| What happens if the install dies halfway? | transactional: durable journal, backup, atomic replace, reverse rollback |
+| Can it be undone? | transactional uninstall that only deletes ownership-proven files |
 
 ---
 
 ## Quick start
 
-1. Download / extract a release package (or build one, see below).
-2. **Install:** double-click `Install.cmd`, pick your project folder in the Windows folder
-   picker. Nothing is written until you see the per-file plan and confirm.
+1. Download / extract a release package (or build one, see [Fork workflow](#fork-workflow)).
+2. **Install:** double-click `CodexDshTeamToolkit.Install.exe` in the package root (the normal GUI
+   entry), or `Install.cmd` if you prefer the zero-dependency script. Pick your project folder in
+   the Windows folder picker. Nothing is written until you see the per-file plan and confirm.
 3. **Uninstall:** double-click `CodexDshTeamToolkit.Uninstall.exe` inside the project, read
    the plan, confirm.
 
@@ -37,18 +38,31 @@ Command line (CI or power users):
 
 ```powershell
 # plan only - provably zero writes
+.\CodexDshTeamToolkit.Install.exe --target "D:\projects\my-project" --plan-only
 .\Install.cmd -Target "D:\projects\my-project" -PlanOnly
 
-# install / upgrade
-.\Install.cmd -Target "D:\projects\my-project"
+# install / upgrade (unattended)
+.\CodexDshTeamToolkit.Install.exe --target "D:\projects\my-project" --yes
 
 # unattended uninstall
 & "D:\projects\my-project\CodexDshTeamToolkit.Uninstall.exe" --target "D:\projects\my-project" --yes
 ```
 
-`Install.cmd` never requires elevation, never uses the network, and never touches `PATH`,
-the registry, global PowerShell profiles, Git configuration, your `AGENTS.md` or your source
-files.
+### Entry points
+
+| Entry | Role |
+| --- | --- |
+| `CodexDshTeamToolkit.Install.exe` (package root) | The normal entry: double-click for the folder picker, or drive it unattended. Flags: `--target <project>` (or a positional path), `--package <dir>` (default: the EXE's own directory), `--yes`, `--no-ui`, `--plan-only`, `--help`. It is a thin framework-dependent shell — it locates the package and the project, shows the plan produced by the shared engine, asks for confirmation, then calls that engine and forwards its exit code. It holds no ownership, transaction or path logic of its own. |
+| `Install.cmd` (package root) | The zero-dependency CLI/CI entry and the advanced path: it passes engine parameters straight through, and prefers `pwsh.exe` with a fallback to the in-box Windows PowerShell. Use it when you cannot or do not want to run an EXE. |
+| `install/Invoke-Toolkit.ps1` | The single engine behind both launchers. Call it directly for engine-level switches (`-Action`, `-TestMode`, `-TestFault`, ...). |
+| `CodexDshTeamToolkit.Uninstall.exe` (project root after install) | Thin launcher for the uninstall path, with `--plan-only` / `--yes` / `--no-ui`. |
+
+The two package-root launchers are **not** installed into your project, do **not** enter the
+ownership ledger, never elevate, and add no network use or persistent system state. They are
+framework-dependent and run on the .NET Framework 4.x that ships with Windows 10/11. Exit codes
+are stable and documented in
+[docs/CONFIGURATION.md](docs/CONFIGURATION.md#exit-codes): `0` success, `8` needs explicit
+confirmation, and non-zero values are fail-closed with the rollback state reported.
 
 ---
 
@@ -84,14 +98,16 @@ or persisted. See [docs/SECURITY.md](docs/SECURITY.md).
 
 - **Node ≥ 22.19.0** for the installed Team/Monitor runtime (declared in the payload's
   `engines.node`). The installer itself only needs PowerShell.
-- `npm ci` once inside `<project>\.agents\skills\mcp-to-dsh` before the first Team run: that is
-  the **only** step that uses the network. Install, upgrade, uninstall, tests, release build and
-  release verify are all offline.
+- The DSH runtime dependency is pinned and tested against **`@deepseek-ai/dsh 0.1.5-rc.1`**
+  (see the payload's `package.json`). Other DSH versions are not claimed to be compatible: a
+  different version is untested rather than forbidden, so pin the one you validated.
+- `npm ci` once inside `<project>\.agents\skills\mcp-to-dsh` before the first Team run.
 - Both install and uninstall show a plan and ask for confirmation. Automation passes `-Yes`;
   a non-interactive run without it exits `8` and writes nothing.
-- The Team Home marker contract (`.codex-dsh-team-home.json`, `codex-dsh-team-home/v1`) is shared
-  verbatim with the Node runtime, so installer-created and runtime-created Team Homes are
-  mutually recognised. The superseded `.codex-dsh-team-runtime.json` is refused, never migrated.
+- The Team Home marker is `.codex-dsh-team-home.json` (`codex-dsh-team-home/v1`), shared verbatim
+  with the Node runtime, so installer-created and runtime-created Team Homes are mutually
+  recognised. Any other marker file — including `.codex-dsh-team-runtime.json` — makes the
+  directory refuse ownership instead of being adopted.
 - Ownership is proven by **direct byte comparison** with the `pristine/<path>` copy under the
   project's state directory: no checksum, hash or digest is computed, stored or trusted, and a
   match never means "who produced it". Team attribution stays with the Git evidence model.
@@ -99,12 +115,31 @@ or persisted. See [docs/SECURITY.md](docs/SECURITY.md).
   belongs to the distribution channel: the toolkit creates and consumes no checksum list or
   sidecar and does not claim to detect a tampered package.
 
+### What leaves the machine, and what stays local
+
+These are separate paths and are not the same promise:
+
+| Path | Network behavior |
+| --- | --- |
+| Installer, upgrade, uninstall | Fully offline. No toolkit telemetry, no phone-home, no package restore, no elevation. |
+| Maintainer build / Verify / tests | Fully offline. No push, no publish. |
+| First `npm ci` in the payload skill | Contacts the npm registry once, to materialise the pinned dependency tree. |
+| Running actual Team/Monitor AI tasks | Your prompt, repository context and task text are sent to the **model provider you configured** in DSH. That traffic is governed by your provider account and its terms, and it **may incur third-party cost**. This is your configuration, not toolkit telemetry. |
+
+State and evidence stay local: the ownership ledger, `pristine/` baselines, transaction
+journal/backups and the Team Home all live under your project and the toolkit's owned runtime
+directory. Plans, journals and logs record paths and outcomes, never file contents or credential
+values (see [docs/SECURITY.md](docs/SECURITY.md)).
+
 ## Repository layout
 
 ```
-Install.cmd                     double-click entry point (STA folder picker)
+CodexDshTeamToolkit.Install.exe  package-root GUI/CLI installer launcher (built, not source)
+Install.cmd                     zero-dependency CLI/CI entry (STA folder picker)
 install/Invoke-Toolkit.ps1      the single core engine (install / upgrade / uninstall)
 payload/                        the managed skill files
+installer/src/Installer.cs      thin C# 5 installer shell
+installer/Build-Installer.ps1   builds the installer EXE with the in-box csc.exe
 uninstaller/src/Uninstaller.cs  thin C# 5 WinForms shell
 uninstaller/Build-Uninstaller.ps1  builds the EXE with the in-box csc.exe
 release/                        release manifest schemas + package layout
@@ -115,29 +150,55 @@ tests/                          safety / transaction / install+uninstall test su
 dist/                           generated by the build (git-ignored)
 ```
 
+### Repository materials vs the release package
+
+`release/package-layout.json` is the authority on what ships. Today:
+
+- **Repository-only** (not in the package): `tools/`, `tests/`, and `dist/`. These are
+  maintainer materials — you need a source checkout to run them.
+- **Shipped in the package**: `Install.cmd`, `CodexDshTeamToolkit.Install.exe`, the engine
+  (`install/Invoke-Toolkit.ps1`), the built `uninstaller/CodexDshTeamToolkit.Uninstall.exe`,
+  both READMEs, `CHANGELOG.md`, `LICENSE`, the four `docs/`, and the `release/`
+  schemas/layout.
+- **Shipped for auditability**: the build recipe and source of both thin launchers
+  (`installer/Build-Installer.ps1` + `installer/src/Installer.cs`, and
+  `uninstaller/Build-Uninstaller.ps1` + `uninstaller/src/Uninstaller.cs`) are included on
+  purpose, so a reader can verify exactly what each EXE does and rebuild it with the Windows
+  in-box compiler. They are not needed to install or uninstall.
+
 ---
 
-## Building a release (offline)
+## Fork workflow
 
-These commands are **maintainer tools for a source checkout only**. `tools/`, `tests/`,
-`uninstaller/src/` and the `payload/` sources are repository artifacts: the release package
-ships the built installer engine, the thin EXE, the docs and the release folder, not the
-development tree.
+Everything a fork needs happens in the source tree, and the result is a package:
 
-```powershell
-# 1. thin uninstaller EXE (needs the Windows in-box .NET Framework csc.exe)
-pwsh -File uninstaller/Build-Uninstaller.ps1
+1. **Edit the source tree.** The runtime skill files live under `payload/`; the installer engine
+   is `install/Invoke-Toolkit.ps1`; the thin launchers are `installer/src/Installer.cs` and
+   `uninstaller/src/Uninstaller.cs`. The managed install set is declared in
+   `release/payload-inventory.json` — add a new payload file there as well as on disk, or the
+   build will report it as undeclared and exclude it.
+2. **Run the maintainer tools from a source checkout.** The full workflow below needs one:
+   `tools/`, `tests/` and `dist/` are repository materials, not package contents. The two
+   launcher build recipes and their sources are the exception — they ship with the package, so
+   the EXEs can also be audited and rebuilt from an extracted release:
 
-# 2. package + zip (no network, no push, no checksum artefact)
-pwsh -File tools/Build-Release.ps1 -Version 1.0.0
+   ```powershell
+   pwsh -File installer/Build-Installer.ps1                      # rebuild the installer EXE (in-box csc.exe)
+   pwsh -File uninstaller/Build-Uninstaller.ps1                  # rebuild the thin EXE (in-box csc.exe)
+   pwsh -File tests/Run-Tests.ps1                                # safety / transaction suite
+   pwsh -File tools/Build-Release.ps1 -Version 1.0.0             # package + zip, offline
+   pwsh -File tools/Verify-Release.ps1 -Package dist/codex-dsh-team-toolkit-v1.0.0.zip
+   ```
 
-# 3. verify the produced package
-pwsh -File tools/Verify-Release.ps1 -Package dist/codex-dsh-team-toolkit-v1.0.0.zip
-```
-
-`Build-Release.ps1` refuses to run when the payload is missing unless you pass
-`-AllowMissingPayload`, and it fails the build on forbidden paths and on unmarked
-high-confidence secrets found in payload text files.
+   `Build-Release.ps1` refuses to run when the payload is missing unless you pass
+   `-AllowMissingPayload`, and it fails the build on forbidden paths and on unmarked
+   high-confidence secrets found in packaged text files.
+3. **Inspect the tests.** `tests/` covers install, ownership, transactions, uninstall, path
+   policy, confidentiality, relocation, recovery/TOCTOU, Windows hygiene, release tooling and
+   the thin EXE. The suite uses temporary directories and fake credentials only.
+4. **Publish the resulting package.** The build never pushes anywhere: publish
+   `dist/codex-dsh-team-toolkit-v<version>/` (and the zip) yourself, through whatever channel
+   you use. Release transport integrity is that channel's responsibility — see the note above.
 
 ---
 
@@ -160,6 +221,15 @@ pwsh -File tests/Run-Tests.ps1 -Filter '04-*' -KeepTemp
 
 The suite uses temporary directories and fake credentials exclusively; it never reads a real
 DSH configuration, credential store or runtime directory, and never uses the network.
+
+## References and acknowledgements
+
+This project referenced [NanmiCoder/dsh-agent-teams](https://github.com/NanmiCoder/dsh-agent-teams)
+during development, a DeepSeek Harness plugin for AgentTeams. Thanks to that project's author and
+contributors for sharing their design and implementation publicly.
+
+The referenced project uses the MIT License; see its
+[LICENSE](https://github.com/NanmiCoder/dsh-agent-teams/blob/main/LICENSE).
 
 ## License
 

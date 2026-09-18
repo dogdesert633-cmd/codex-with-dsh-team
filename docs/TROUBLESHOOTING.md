@@ -143,9 +143,11 @@ the toolkit installed, so the toolkit will not do that for you.
 
 `uninstaller/Build-Uninstaller.ps1` is fail-visible:
 
-> Note: every `Build-*.ps1` / `Verify-*.ps1` command in this section is a **maintainer tool for a
-> source checkout**. `tools/` and `tests/` are not shipped inside a release package, so these
-> commands do not exist in an extracted release.
+> Note: `tools/`, `tests/` and `dist/` are not shipped inside a release package, so the
+> `tools/Build-Release.ps1`, `tools/Verify-Release.ps1` and `tests/Run-Tests.ps1` commands need a
+> **source checkout**. The launcher build recipes are the exception: `uninstaller/Build-Uninstaller.ps1`
+> and `installer/Build-Installer.ps1` ship with the package, so the rebuild command below works
+> in an extracted release as well.
 
 ```
 No C# compiler found; the thin uninstaller EXE cannot be built.

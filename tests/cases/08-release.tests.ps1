@@ -22,6 +22,10 @@ Test-Case -Name 'release: a full offline build produces a verifiable package' -B
   Assert-FileExists (Join-Path $packageRoot 'uninstaller\CodexDshTeamToolkit.Uninstall.exe')
   Assert-FileExists (Join-Path $packageRoot 'uninstaller\src\Uninstaller.cs')
   Assert-FileExists (Join-Path $packageRoot 'uninstaller\Build-Uninstaller.ps1')
+  # the installer EXE ships at the package root, next to Install.cmd, with its source and recipe
+  Assert-FileExists (Join-Path $packageRoot 'CodexDshTeamToolkit.Install.exe')
+  Assert-FileExists (Join-Path $packageRoot 'installer\src\Installer.cs')
+  Assert-FileExists (Join-Path $packageRoot 'installer\Build-Installer.ps1')
   Assert-FileExists (Join-Path $packageRoot 'LICENSE')
   Assert-FileExists (Join-Path $repo 'dist\codex-dsh-team-toolkit-v1.0.0.zip')
 
@@ -43,6 +47,11 @@ Test-Case -Name 'release: a full offline build produces a verifiable package' -B
     # The manifest is a location list: an entry carries no digest field.
     Assert-True (-not ($file.PSObject.Properties.Name -contains 'sha256')) 'a managed entry must not carry a digest field'
     Assert-FileExists (Join-Path $packageRoot ([string]$file.source -replace '/', '\')) ('packaged source ' + [string]$file.source)
+  }
+  # the installer EXE is a package-root launcher: it is packaged but never a managed entry
+  foreach ($file in @($manifest.files)) {
+    Assert-NotMatch ([string]$file.path) 'CodexDshTeamToolkit\.Install\.exe' 'the installer EXE must never be installed'
+    Assert-NotMatch ([string]$file.source) '^installer/' 'the installer source must never be a managed source'
   }
 
   $verify = Invoke-ToolkitTestVerifyRelease -Package $packageRoot

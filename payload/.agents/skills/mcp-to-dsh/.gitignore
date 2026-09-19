@@ -3,6 +3,11 @@ node_modules/
 # Toolkit runtime output. The Monitor writes run evidence, the Team bridge writes session
 # artefacts and the launchers may leave backups while refreshing a pin; none of it belongs
 # in version control when the toolkit is installed into a project.
+#
+# Scope note: these patterns apply ONLY inside this skill directory (…/.agents/skills/mcp-to-dsh/).
+# They cannot reach the target project root, so a run that writes to <project>/artifacts/dsh-monitor/,
+# <project>/artifacts/dsh-gui-runs/ or <project>/.dsh/contracts/ is NOT ignored by this file.
+# Add those exact directories to the project's own .gitignore or .git/info/exclude if needed.
 artifacts/
 .dsh/
 *.log

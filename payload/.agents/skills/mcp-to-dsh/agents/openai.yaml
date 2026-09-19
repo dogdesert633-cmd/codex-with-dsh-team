@@ -1,6 +1,6 @@
 interface:
-  display_name: "DSH 实时路由"
-  short_description: "实时路由 DSH 代码角色并显示 session 与归属证据"
-  default_prompt: "使用 $mcp-to-dsh 将这个明确角色的工作包交给真实 DSH，并显示实时 session、Git、测试和退出证据。"
+  display_name: "DSH 传输与 Monitor"
+  short_description: "把调用方已决定的工作包送达真实 DSH 并回传公开事件与证据"
+  default_prompt: "使用 $mcp-to-dsh 把调用方已经决定好的工作包送达真实 DSH session，并实时回传公开事件、session/turn/run 标识与退出证据；本传输不决定角色分工，也不自行改派或接管目标修改。"
 policy:
   allow_implicit_invocation: true

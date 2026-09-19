@@ -30,7 +30,30 @@ const BRIDGE_VERSION = "0.1.0";
 // shipped by the DSH distribution), not a user/provider choice — the same category as the
 // built-in `deepseek-official` provider id. It is named once here and can be overridden for
 // forward compatibility instead of being repeated as a literal across the code base.
-const DSH_ACP_PROFILE = process.env.CODEX_DSH_ACP_PROFILE?.trim() || "acp";
+//
+// The value is only *read* here and validated where it is used (`resolveDshProfile()` inside
+// `main()`), so an invalid name fails through the bridge's normal redacted fatal path with a
+// non-zero exit instead of throwing during module evaluation.
+const DSH_ACP_PROFILE_ENV = "CODEX_DSH_ACP_PROFILE";
+
+/**
+ * Validate a DSH ACP profile name (mirrors `normalizeDshProfile` in src/server.mjs).
+ *
+ * The monitor spawns this bridge with `CODEX_DSH_ACP_PROFILE` set to a validated profile, so
+ * this is a defense-in-depth check for direct/standalone use. An absent/empty value means the
+ * documented default `acp`.
+ */
+function resolveDshProfile(value = process.env[DSH_ACP_PROFILE_ENV]) {
+  const raw = typeof value === "string" ? value.trim() : value == null ? "" : String(value).trim();
+  if (raw === "") return "acp";
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(raw)) {
+    throw new Error(`${DSH_ACP_PROFILE_ENV} 非法：${raw}（只允许字母数字开头，后跟字母数字、点、下划线或连字符，最长 64 个字符）。`);
+  }
+  if (raw.toLowerCase() === "node_modules") {
+    throw new Error(`${DSH_ACP_PROFILE_ENV} 非法：${raw} 是保留的目录名，不能作为 DSH ACP profile。`);
+  }
+  return raw;
+}
 
 /**
  * The only console writer in this file. Everything printed to stdout/stderr passes the
@@ -166,6 +189,10 @@ async function main() {
     return;
   }
   if (!isAbsolute(args.cwd)) throw new Error("--cwd 必须能解析为绝对路径");
+  // The raw environment read becomes the validated launch parameter here: everything below
+  // (the DSH `--profile` argument) uses this one value, and a bad name fails through the
+  // bridge's redacted fatal path with a non-zero exit.
+  const dshProfile = resolveDshProfile(process.env[DSH_ACP_PROFILE_ENV]);
 
   const startedAt = timestamp();
   if (args.artifactDir) await mkdir(args.artifactDir, { recursive: true });
@@ -226,7 +253,7 @@ async function main() {
   // environment. Only the non-sensitive allowlist plus the two confirmed DSH runtime fields
   // are forwarded, so a parent *_TOKEN/*_KEY/*_PASSWORD/*_SECRET/*_COOKIE/AUTHORIZATION can
   // never reach the provider-authenticated process.
-  const child = spawn(process.execPath, [dshEntryPoint, "--profile", DSH_ACP_PROFILE], {
+  const child = spawn(process.execPath, [dshEntryPoint, "--profile", dshProfile], {
     cwd: args.cwd,
     env: buildChildEnv({ source: process.env, explicit: pickDshRuntimeEnv(process.env) }),
     stdio: ["pipe", "pipe", "pipe"],

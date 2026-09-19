@@ -2,13 +2,30 @@
 
 [English](README.md) | **简体中文**
 
-一个 GitHub-ready、仅面向 Windows、完全离线的安装器，用于把 **Codex × DSH 团队 Skill**
-（`codex-dsh-team` 与 `mcp-to-dsh`）安全地安装进一个已存在的项目。它只管理自己安装过的
-文件，为每个受管文件保留一份 pristine 原始字节副本作为归属证据，并且能够把这些文件
-干净地撤销。
+Codex 额度总是不够用？把重复的实现与审查工作交给分工清楚的团队。
 
-> 状态：v1.0.0 源码工程。`payload/` 存放受管 Skill 文件；本仓库还包含安装引擎、
-> 薄卸载器、Release 工具、文档与测试。
+本工具包提供**三个相互独立的 Skill**：
+
+| Skill | 作用 |
+| --- | --- |
+| `$codex-team` | 通用多角色模板：角色边界、任务合同、独立审查、失败返回修复、证据与最终验收。与执行后端无关，不需要 DSH、Node 或 Monitor。 |
+| `$dsh-role-boundaries` | DSH 能做什么、不能做什么：非视觉代码实现、只读探索、代码审查与文本整理可以；绘图、图像生成/编辑、识图、OCR、截图分析、GUI 视觉判断/验收与长等待不可以。 |
+| `$mcp-to-dsh` | DSH 调用路径与 Monitor：把已经决定好的工作包送达真实 DSH session，并回传公开事件与 session/turn/run 证据。它不决定角色分工。 |
+
+```
+$codex-team                                   # 只用通用团队
+$dsh-role-boundaries $mcp-to-dsh              # DSH 工作；通用模板可选
+$codex-team $dsh-role-boundaries $mcp-to-dsh  # 三者同时读取（不是相互加载）
+```
+
+**推荐的安装方式是完整 Windows 安装包**：运行一次包根安装器，三个 Skill 会一起写入你选择的项目，
+之后也能干净卸载。Codex 始终是协调者与最终验收方；DSH 按需分担普通实现与审查工作，使用**你自己
+配置的** provider，因此可能产生费用。
+
+> **状态：v1.1.0 开发预览 / 预发布；源码 checkout 内不含已编译的 `.exe`。** v1.1.0 安装包以
+> **Pre-release（预发布）**形式提供，不是稳定版：下载见
+> [releases/tag/v1.1.0](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/tag/v1.1.0)，
+> 拿到包后的步骤见[快速开始](#快速开始)，尚未完成的项见[已知限制](#已知限制)。
 
 ---
 
@@ -26,13 +43,28 @@
 
 ## 快速开始
 
-1. 下载 / 解压 Release 包（或按 [Fork 工作流](#fork-工作流)自行构建）。
-2. **安装**：双击包根目录的 `CodexDshTeamToolkit.Install.exe`（常规 GUI 入口），或使用零依赖的
-   `Install.cmd`。在弹出的 Windows 文件夹选择器里选择项目根目录；在看到逐文件 Install Plan
-   之前不会写入任何内容。
-3. **卸载**：双击项目内的 `CodexDshTeamToolkit.Uninstall.exe`，查看 Uninstall Plan 后确认。
+**用完整安装包一次装好（推荐）。**
 
-命令行方式（CI 或高级用户）：
+1. **下载安装包**：从 v1.1.0 预发布页下载
+   [codex-dsh-team-toolkit-v1.1.0.zip](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/tag/v1.1.0)。
+   （维护者也可用 `tools/Build-Release.ps1` 在本地构建，产物在 `dist/`。）
+2. **完整解压** —— 安装器需要整棵包目录，不是只要一个 EXE。
+3. **运行包根目录的 `CodexDshTeamToolkit.Install.exe`**（常规 GUI 入口），或使用零依赖的
+   `Install.cmd`。
+4. **在弹出的 Windows 文件夹选择器里选择你已有的项目根目录。**
+5. **核对逐文件计划并确认。** 在此之前不会写入任何内容。
+6. 三个 Skill 一次整体落地：`<project>/.agents/skills/codex-team`、
+   `<project>/.agents/skills/dsh-role-boundaries`、`<project>/.agents/skills/mcp-to-dsh`。
+   项目根目录还会写入 `start_dsh_team.cmd`、`sync_dsh_team_config.cmd` 与薄卸载器。这些文件都由
+   包 inventory 与项目 ownership ledger 管理——**不需要你手工逐个复制**，安装器也**不会**修改项目的
+   `AGENTS.md`。
+
+首次真正运行 DSH 前，请在 `<project>\.agents\skills\mcp-to-dsh` 内执行一次 `npm ci` 安装运行依赖。
+之后首次启动会自行准备其余部分：在 toolkit-owned Team Home 内，用**已安装并锁定的 DSH 自带模板**
+初始化 DSH **ACP profile**。你**不需要**手写 profile 的 `package.json`，profile 目录也不需要再装
+一套依赖——详见下方「ACP profile（DSH 入口配置）」小节。
+
+命令行方式（CI 或高级用户，基于已解压的包）：
 
 ```powershell
 # 仅显示计划，可证明零写入
@@ -61,6 +93,57 @@ Framework 4.x。退出码稳定且已文档化（见
 [docs/CONFIGURATION.md](docs/CONFIGURATION.md#exit-codes)）：`0` 成功，`8` 需要显式确认，其他非零值
 均为 fail-closed 并报告回滚状态。
 
+## ACP profile（DSH 入口配置）
+
+这里的 profile 是**DSH 的启动配置 / 模块声明**（`profiles/<name>/` 下的 `package.json` 声明 DSH
+加载哪些 ACP bundle），**不是**你的个人资料、账户、provider 或 model 选择。工具包的默认值是 DSH
+内置的 **`acp`**；启动器、Monitor 与 bridge 子进程用的都是同一个值。
+
+| 你的设置 | 含义 |
+| --- | --- |
+| `-TeamProfile <name>`（启动器 / `start_dsh_team.cmd`） | 指定使用的 ACP profile；环境变量等价物是 `CODEX_DSH_TEAM_PROFILE`。指定的自定义名字即使尚不存在也会被创建。 |
+| 不设置 | 若 owned Team Home 内恰好只有一个既有可选 profile，就用它；否则使用内置 `acp` 并自动准备。 |
+| `-TeamProfile <新名字>` | 自定义名字会在 owned Team Home 内用已安装 DSH 自带的 ACP 模板创建（`dsh --from-default-profile acp`）。profile 目录及其插件绝不会被替换、搬移或删除；配置同步只会重写**当前选定** profile 的 `cordis.patch.yml`（保留带时间戳的 `.bak`），把该 profile 固定到你配置的 provider/model。 |
+| Monitor `--dsh-profile <name>` | 同一个名字：Monitor 记录它，并以 `CODEX_DSH_ACP_PROFILE` 交给 bridge。`/api/health` 的 `dshProfile` 与本地 Monitor record 的 `dsh_profile` 暴露它；复用要求 workspace、Team Home 与 profile **三者一致**。 |
+
+名字的确定顺序：
+
+1. `-TeamProfile <name>`；
+2. `CODEX_DSH_TEAM_PROFILE`；
+3. owned Team Home 内已有的那一个可选 profile；
+4. 都没有时使用默认 `acp` 并自动准备。
+
+- **多个候选必须显式选择。** Team Home 内已有多个可选 profile 时不做任何猜测：请用 `-TeamProfile` /
+  `CODEX_DSH_TEAM_PROFILE` 指定。"一个 profile 都没有"不是歧义——会直接用默认 `acp` 并准备它。
+- **你的 profile 归你。** 已存在的 profile 一律保留；其中的用户插件不会被工具包搬移、合并或覆盖。
+  唯一会写入的是**当前选定** profile 的 `cordis.patch.yml`（同步会保留一份带时间戳的 `.bak`）。
+- **内置辅助模板不算入口。** `web`、`headless`、`sdk`、`sdk-minimal` 在查找可选 profile 时被忽略，
+  也不能作为 Team 的 ACP 入口；`node_modules` 也被拒绝作为 profile 名。
+- **半成品 profile 一律拒绝。** 目标目录已存在但没有有效 profile manifest 时，既不接管也不覆盖：
+  请修复它，或换一个名字。
+- **全链路同一个名字。** 启动器、Monitor、配置同步与 bridge 子进程收到同一个 profile，因此不会出现
+  “按 profile A 规划、DSH 却跑 profile B”。
+- **安装器只复制文件，profile 在运行时准备。** profile 只在 owned Team Home 内准备，绝不放在你的
+  用户 DSH Home（它始终是只读同步来源）。同步照旧复制 `settings.yaml`、provider/model 选择，以及
+  一份当前用户 ACL 的 `.credentials.yaml` 副本；这条边界未变。
+
+## 可选：只手工复制纯规则 Skill
+
+如果你**只**想用那两个纯规则 Skill、不要安装器，可以手工复制目录，而不使用安装包：
+
+```text
+<repo>/payload/.agents/skills/codex-team            -> <project>/.agents/skills/codex-team
+<repo>/payload/.agents/skills/dsh-role-boundaries   -> <project>/.agents/skills/dsh-role-boundaries
+```
+
+这是轻量路径，不是推荐路径：手工副本不受 ownership ledger 管理，而 DSH 运行需要它自己的前置
+（Node、DSH runtime、其配置，以及由安装器准备的 owned Team Home）。**真正要调用 DSH 时，请使用完整
+安装包并按其既有前置执行**，不要靠手工复制 `mcp-to-dsh` 绕过；手工副本日后也无法由安装器代管卸载。
+
+> 从带有旧混合 `codex-dsh-team` 入口的旧包升级？普通 upgrade 会把它作为 `retained` 保留下来，
+> 因此请先用项目内卸载器卸载旧受管文件 —— 见
+> [从旧混合团队 Skill 迁移](docs/INSTALLATION.md#migrating-from-the-older-mixed-team-skill)。
+
 ---
 
 ## 安全保证
@@ -82,8 +165,22 @@ Framework 4.x。退出码稳定且已文档化（见
 文件、用户新增文件、`node_modules`、其他 Skill 与未知内容一律保留并报告。目录仅在确认空时
 逐级删除。
 
-**证据里没有 secret**：plan、journal、backup、log 不保存文件内容或凭据值；路径中形似
-secret 的片段在打印或落盘前会被脱敏。详见 [docs/SECURITY.md](docs/SECURITY.md)。
+**本地存了什么、没存什么**：工具包**确实**保留它管理文件的字节副本——`pristine/<path>` 保存
+安装时的确切字节（归属比较与卸载依据），事务的 `backup/`、`quarantine/` 保存可回滚/恢复的副本。
+plan、journal、log 记录**路径与状态**，不记录文件正文；路径中形似 secret 的片段在打印或落盘前
+会被脱敏。这是关于"消息"的脱敏保证，**不等于**"任何位置都没有你内容的副本"。完整说明（含
+Monitor 自身的 prompt/event/Git 证据与 owned Team Home 中的凭据副本）见
+[docs/SECURITY.md](docs/SECURITY.md)。
+
+**DSH 以真实权限执行**：Monitor 固定使用 `danger-full-access`，ACP bridge 自动应答权限请求
+（`ALLOW_ONCE`），因此 DSH 工具运行时**没有交互式审批弹窗**。工作包里的角色 allowlist 是
+**指令边界，不是 OS 沙箱**。`dispatch_dsh_gui.ps1 -RejectTools`（等价于 `allowTools:false`）会让
+bridge 应答 `REJECT_ONCE`——它是**拒绝工具**，不是新增的审批界面。
+
+**运行产物不会自动被忽略**：工具包**不会**修改你项目根的 `.gitignore`，已安装 Skill 自身的
+`.gitignore` 也只作用于该 Skill 目录。运行 DSH 前，如果不想让这些目录被跟踪，请把它们加进项目
+`.gitignore` 或 `.git/info/exclude`：`artifacts/dsh-monitor/`、`artifacts/dsh-gui-runs/`、
+`.dsh/contracts/`。已被跟踪的文件不受 ignore 规则影响，请先用 `git status` 确认。
 
 ---
 
@@ -172,8 +269,8 @@ Fork 所需的全部工作都在源码树内完成，产物是一个 package：
    pwsh -File installer/Build-Installer.ps1                      # 重建安装 EXE（系统自带 csc.exe）
    pwsh -File uninstaller/Build-Uninstaller.ps1                  # 重建薄 EXE（系统自带 csc.exe）
    pwsh -File tests/Run-Tests.ps1                                # 安全 / 事务测试套件
-   pwsh -File tools/Build-Release.ps1 -Version 1.0.0             # 打包 + zip，离线
-   pwsh -File tools/Verify-Release.ps1 -Package dist/codex-dsh-team-toolkit-v1.0.0.zip
+   pwsh -File tools/Build-Release.ps1 -Version 1.1.0             # 打包 + zip，离线
+   pwsh -File tools/Verify-Release.ps1 -Package dist/codex-dsh-team-toolkit-v1.1.0.zip
    ```
 
    payload 缺失时 `Build-Release.ps1` 会直接失败，除非显式传入 `-AllowMissingPayload`；命中禁止
@@ -202,6 +299,20 @@ pwsh -File tests/Run-Tests.ps1 -Filter '04-*' -KeepTemp
 ```
 
 测试只使用临时目录与假凭据，不读取任何真实 DSH 配置、凭据库或 runtime，也不联网。
+
+## 已知限制
+
+这是开发中的源码工程，不是完成品。未完成项如实列出：
+
+- **owned Team Home 首启会自动准备。** 在已安装的 `mcp-to-dsh` skill 目录执行一次 `npm ci` 后，启动器
+  会在 owned Team Home 内用已安装并锁定的 DSH 自带模板初始化 ACP profile。安装器本身仍然只是离线复制
+  文件、不预置任何 profile；自定义 `-TeamProfile` 名字也用同样方式创建。
+- **测试并非表面那么全绿**：PowerShell 测试入口可能把"缺依赖而 skip"计为通过。请先安装 payload
+  依赖，并查看 Node 套件的真实执行结果与 SKIP 统计，再判断测试是否真的跑过。
+- **尚未全面验证**：GUI 文件夹选择器、真实 provider 运行，以及部分 ACL / 凭据 / 部分权限场景。
+
+已获得的证据（规则审查、定向 9 PASS / 1 SKIP 片段、隔离包安装与迁移演练）真实但有限，
+不足以把本项目称为成熟、正式发布的成品。
 
 ## 参考与致谢
 

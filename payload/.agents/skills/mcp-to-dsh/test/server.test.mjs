@@ -309,6 +309,9 @@ test("serves the monitor and health endpoint on loopback", async (context) => {
   assert.equal(health.ok, true);
   assert.equal(health.service, "dsh-team-monitor");
   assert.equal(health.agentRegistry.schemaVersion, 1);
+  // The health projection always carries the ACP profile this monitor runs under; the default
+  // is the documented built-in `acp`, so a launcher can decide whether to reuse the monitor.
+  assert.equal(health.dshProfile, "acp");
 
   const page = await fetch(origin).then((response) => response.text());
   assert.match(page, /DSH Team Monitor/);
@@ -445,9 +448,105 @@ test("spawn and follow_up dispatch the DSH child with the Team full-access permi
   await waitForStatus(monitor, followUp.body.id, ["completed"]);
 });
 
+// --- DSH ACP profile propagation ----------------------------------------------
+
+test("a custom --dsh-profile reaches health, the bridge child env and the config sync", async (context) => {
+  const fake = createFakeBridge();
+  const workspace = await mkdtemp(join(tmpdir(), "dsh-profile-"));
+  const userHome = await mkdtemp(join(tmpdir(), "dsh-profile-user-"));
+  context.after(() => rm(workspace, { recursive: true, force: true }));
+  context.after(() => rm(userHome, { recursive: true, force: true }));
+  const started = await startMonitor(context, {
+    workspace,
+    dshHome: workspace,
+    dshUserHome: userHome,
+    dshProfile: "team-a",
+    spawnBridge: fake.spawnBridge,
+  });
+  const { monitor, origin } = started;
+
+  // 1) health exposes exactly the validated profile the monitor was started with.
+  const health = await fetch(`${origin}/api/health`).then((response) => response.json());
+  assert.equal(health.dshProfile, "team-a");
+
+  // 2) every dispatched DSH child receives the same profile as an explicit non-secret field,
+  //    so a bridge can never run profile B while the Task was planned under profile A.
+  const spawned = await dispatchJson(origin, { agentId: "AGENT-PROFILE-1", formalRole: "coder", lifecycleAction: "spawn" });
+  assert.equal(spawned.status, 202);
+  assert.equal(fake.calls[0].env.CODEX_DSH_ACP_PROFILE, "team-a");
+  assert.equal(fake.calls[0].env.DSH_HOME, workspace);
+  await fake.calls[0].finish({ sessionId: "77777777-7777-7777-7777-777777777777" });
+  await waitForStatus(monitor, spawned.body.id, ["completed"]);
+});
+
+test("the one-click configuration sync runs with the same Team profile", async (context) => {
+  const workspace = await mkdtemp(join(tmpdir(), "dsh-profile-sync-"));
+  const userHome = await mkdtemp(join(tmpdir(), "dsh-profile-sync-user-"));
+  const sync = createFakeSettingsSync();
+  const started = await startSyncMonitor(context, {
+    workspace,
+    userHome,
+    dshProfile: "team-b",
+    spawnSettingsSync: sync.spawnSettingsSync,
+  });
+  context.after(() => rm(workspace, { recursive: true, force: true }));
+  context.after(() => rm(userHome, { recursive: true, force: true }));
+
+  const response = await syncSettingsRequest(started.origin);
+  assert.equal(response.status, 200);
+  const args = sync.calls[0].args;
+  const index = args.indexOf("-TeamProfile");
+  assert.notEqual(index, -1, "配置同步子进程必须收到 -TeamProfile");
+  assert.equal(args[index + 1], "team-b", "同步使用的 profile 必须与 bridge 一致");
+  // and the same arguments still carry the homes/workspace boundary (unchanged behaviour)
+  assert.equal(args[args.indexOf("-TeamDshHome") + 1], workspace);
+  assert.equal(args[args.indexOf("-Workspace") + 1], workspace);
+});
+
+test("an invalid dsh profile name is refused by the factory and by the CLI", async () => {
+  const bad = ["../evil", "a b", "-lead", ".hidden", "node_modules", "NODE_MODULES", "x".repeat(65), "a/b"];
+  for (const name of bad) {
+    assert.throws(
+      () => createMonitorServer({ workspace: process.cwd(), dshProfile: name }),
+      /--dsh-profile|dsh profile/,
+      `非法 profile 必须被工厂拒绝: ${name}`,
+    );
+  }
+  // the documented default keeps every existing caller working
+  const monitor = createMonitorForTest({ workspace: process.cwd(), dshHome: process.cwd(), port: 0, token: TOKEN });
+  assert.equal(typeof monitor.start, "function");
+  await monitor.close();
+
+  // the CLI path validates too: `--dsh-profile` is a launch parameter, never silently coerced
+  const cli = spawn(process.execPath, [join(import.meta.dirname, "..", "src", "server.mjs"), "--dsh-profile", "../evil"], {
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  let stderr = "";
+  cli.stderr.on("data", (chunk) => { stderr += chunk; });
+  const exitCode = await new Promise((resolvePromise) => cli.on("exit", (code) => resolvePromise(code)));
+  assert.notEqual(exitCode, 0, "CLI 必须拒绝非法 --dsh-profile");
+  assert.match(stderr, /--dsh-profile|dsh profile/);
+});
+
+test("the profile grammar agrees between the monitor factory and the launcher contract", async () => {
+  const { normalizeDshProfile, DEFAULT_DSH_PROFILE } = await import("../src/server.mjs");
+  assert.equal(DEFAULT_DSH_PROFILE, "acp");
+  for (const value of [undefined, null, "", "   "]) {
+    assert.equal(normalizeDshProfile(value), "acp", "缺失/空值必须回落到内置 acp");
+  }
+  for (const value of ["acp", "team-a", "A1.b_c-d", "x".repeat(64)]) {
+    assert.equal(normalizeDshProfile(value), value, "合法名字必须原样保留");
+  }
+  for (const value of ["..", "a b", "-lead", ".hidden", "node_modules", "NODE_MODULES", "x".repeat(65), "a/b", "a\\b"]) {
+    assert.throws(() => normalizeDshProfile(value), /非法/, `非法名字必须被拒绝: ${value}`);
+  }
+});
+
 test("an inherited parent DSH_PERMISSION_MODE never silently downgrades the Team default", async (context) => {
   const previous = process.env.DSH_PERMISSION_MODE;
   process.env.DSH_PERMISSION_MODE = "workspace-write";
+
   context.after(() => {
     if (previous === undefined) delete process.env.DSH_PERMISSION_MODE;
     else process.env.DSH_PERMISSION_MODE = previous;

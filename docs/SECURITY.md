@@ -13,7 +13,7 @@ It is written so it can be checked against the engine and the test suite line by
 | Path traversal / symlink / junction escape out of the project | per-segment reparse check + normalization + resolved-path containment for every read and write |
 | A foreign or hand-edited ownership ledger grants ownership over arbitrary files | ledger identity/schema validation, deny-by-default path policy, byte-for-byte comparison against the pristine baseline before any mutation |
 | Uninstall deletes user work | quarantine-first transaction; only files still byte-identical to their pristine baseline are removed; unknown/user-added content is kept and reported; directories removed only when provably empty |
-| Secrets end up in plans, journals, backups, logs or a release | deny-by-default path policy, no content capture anywhere, redaction of secret-shaped values, release-time path + content scanning |
+| Secrets end up in plans, journals, backups, logs or a release | deny-by-default path policy, no secrets in messages (redaction of secret-shaped values), release-time path + content scanning. Note: `pristine/` and transaction `backup/`/`quarantine/` **are** byte copies of managed files by design |
 | A user's real DSH configuration is modified or harvested | the user DSH Home is read-only; writable state only in a marker-proven, toolkit-owned Team Home |
 | Prompt injection asks an agent to read secrets | project text and prompts are never an authorization to read secrets (see §7) |
 
@@ -148,20 +148,41 @@ the previous state is restored; the exit code is `6`, never a silent success.
 
 - **Deny-by-default**: the policy in §3 is applied to every release-manifest entry, ownership
   entry and uninstall path. A manifest that claims a credential store is refused.
-- **Data flow.** Three paths, and only the last one is external:
+- **Data flow.** Two of these four paths use the network; the other two do not:
   1. *Installer / upgrade / uninstall* — offline, no telemetry, no phone-home, no elevation.
   2. *Maintainer build / Verify / tests* — offline, no push, no publish.
-  3. *First `npm ci` in the payload skill* — contacts the npm registry once for the pinned tree.
-  4. *Running actual AI tasks* — your prompt, repository context and task text are sent to the
-     **model provider configured in your DSH setup**. That traffic follows your provider account
-     and its terms and **may incur third-party cost**. It is your configuration, not toolkit
-     telemetry, and the toolkit neither adds to it nor proxies it.
+  3. *First `npm ci` in the payload skill* — **network**: contacts the npm registry once for the
+     pinned tree.
+  4. *Running actual AI tasks* — **network**: your prompt, repository context and task text are
+     sent to the **model provider configured in your DSH setup**. That traffic follows your
+     provider account and its terms and **may incur third-party cost**. It is your configuration,
+     not toolkit telemetry, and the toolkit neither adds to it nor proxies it.
 
   What stays local: the ownership ledger, `pristine/` baselines, transaction journal/backups and
-  the Team Home all live under your project and the toolkit's owned runtime directory, and none
-  of them record file contents or credential values.
-- **No content capture**: the engine copies bytes and compares them byte for byte; it never
-  parses, logs, prints or stores file contents. Plans and journals list *paths* only.
+  the Team Home all live under your project and the toolkit's owned runtime directory. What those
+  local artifacts contain differs by kind — see the next bullet.
+- **What local artifacts actually contain.** They are not all content-free:
+  - `pristine/<path>` holds **the exact installed bytes** of each managed file; that is the whole
+    point — ownership comparison and uninstall read it.
+  - a transaction's `backup/` and `quarantine/` hold **byte copies of the files being replaced or
+    removed**, so a rollback or restore is possible.
+  - the owned Team Home may hold a **credential copy** (opaque, one-directional, written with a
+    current-user ACL) when the payload needs one there.
+  - the owned Team Home also holds the **ACP profile** the launcher prepares at runtime (a DSH
+    launch configuration: `profiles/<name>/package.json` declaring ACP bundles, plus whatever DSH
+    writes there). It is runtime state, not an installer artefact: the installer never creates,
+    replaces or copies a profile, existing profiles are left as they are, and the user DSH Home is
+    never used as a profile location.
+  - the Monitor keeps its own run evidence: dispatched prompts/instructions, public ACP events and
+    Git-derived records.
+  - plans, journals and logs record **paths and status**, not file bodies; secret-shaped values are
+    redacted before they are printed or persisted.
+
+  So the guarantee is about *messages and metadata*, not "no copy of your content exists anywhere".
+  Redaction is a pattern-based filter, not an OS isolation layer and not a proof that every secret
+  was found.
+- **No content capture in messages**: the engine copies bytes and compares them byte for byte; it
+  does not parse or print file contents, and plans and journals list *paths* only.
 - **Redaction before output and before persistence**: every message, plan line, journal note
   and log line passes through the redaction filter (`<REDACTED>`). It removes value positions
   that are explicitly named as sensitive (`password`/`passwd`/`pwd`, `secret`, `token`,
@@ -183,7 +204,24 @@ the previous state is restored; the exit code is `6`, never a silent success.
   appears in either.
 - **The state directory ignores itself**: `<target>/.codex-dsh-team-toolkit/.gitignore`
   contains `*`, so Git ignores the ledger, log and transaction evidence without the toolkit
-  ever creating or editing the project's own `.gitignore`.
+  ever creating or editing the project's own `.gitignore`. That self-ignore covers **only** the
+  toolkit state directory; it does not cover the runtime output described next.
+- **Runtime output in your project is not ignored for you.** The installed skill's own
+  `.gitignore` applies only inside that skill directory, so a DSH run can leave tracked-looking
+  paths at the project root. If you do not want them committed, add these exact directories to
+  your project's `.gitignore` or its local `.git/info/exclude`:
+  `artifacts/dsh-monitor/`, `artifacts/dsh-gui-runs/`, `.dsh/contracts/`.
+  The installer never edits your project root `.gitignore`, and ignore rules do not affect files
+  that are already tracked — check `git status` first, and do not blanket-ignore your own
+  `artifacts/`.
+- **DSH executes with real permissions, under prompt-level boundaries.** The Monitor pins
+  `danger-full-access` and the ACP bridge answers permission requests itself (`ALLOW_ONCE`), so
+  DSH tools run **without an interactive approval prompt**. A work package's role allowlist is an
+  **instruction boundary, not an OS sandbox**; the DSH role constraints in the skills are prompt
+  policy, not kernel-level isolation. `dispatch_dsh_gui.ps1 -RejectTools` (equivalently
+  `allowTools:false`) makes the bridge answer `REJECT_ONCE` — that **refuses tools**, and is not
+  an added interactive approval UI. This release does not change any permission default or
+  execution behaviour.
 - **User DSH Home is read-only**: the toolkit may read the minimal configuration it needs to
   operate, and nothing else. It never patches, migrates, cleans up, overwrites or
   reconfigures it, in either direction.

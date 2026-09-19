@@ -46,21 +46,18 @@ async function assertPayloadLayout() {
 // byte-identical to the external baseline; the managed list itself comes from the baseline
 // manifest (an explicit external input), not from a hand-maintained payload whitelist.
 const MODIFIED_MANAGED = new Set([
-  '.agents/skills/codex-dsh-team/SKILL.md',
-  '.agents/skills/codex-dsh-team/assets/AGENTS_DSH_SECTION.md',
-  '.agents/skills/codex-dsh-team/assets/RUN_REPORT.md',
-  '.agents/skills/codex-dsh-team/assets/WORK_PACKAGE.md',
-  '.agents/skills/codex-dsh-team/assets/metrics.json',
-  '.agents/skills/codex-dsh-team/profiles/default.yaml',
-  '.agents/skills/codex-dsh-team/references/dsh-recovery-and-fallback.md',
-  '.agents/skills/codex-dsh-team/references/dsh-stop-and-return.md',
-  '.agents/skills/codex-dsh-team/references/evidence-and-recovery.md',
-  '.agents/skills/codex-dsh-team/references/model-validation-and-no-hash.md',
-  '.agents/skills/codex-dsh-team/references/task-capability-routing.md',
-  '.agents/skills/codex-dsh-team/references/team-routing.md',
-  '.agents/skills/codex-dsh-team/references/team-task-scheduler.md',
-  '.agents/skills/codex-dsh-team/roles/coordinator.md',
-  '.agents/skills/codex-dsh-team/roles/tester.md',
+  '.agents/skills/codex-team/SKILL.md',
+  '.agents/skills/codex-team/agents/openai.yaml',
+  '.agents/skills/codex-team/assets/WORK_PACKAGE.md',
+  '.agents/skills/codex-team/references/roles.md',
+  '.agents/skills/codex-team/references/workflow.md',
+  '.agents/skills/dsh-role-boundaries/SKILL.md',
+  '.agents/skills/dsh-role-boundaries/agents/openai.yaml',
+  '.agents/skills/dsh-role-boundaries/assets/WORK_PACKAGE.md',
+  '.agents/skills/dsh-role-boundaries/references/dsh-execution-policy.md',
+  '.agents/skills/dsh-role-boundaries/references/dsh-recovery-and-fallback.md',
+  '.agents/skills/dsh-role-boundaries/references/model-validation-and-no-hash.md',
+  '.agents/skills/dsh-role-boundaries/references/task-capability-routing.md',
   '.agents/skills/mcp-to-dsh/.gitignore',
   '.agents/skills/mcp-to-dsh/SKILL.md',
   '.agents/skills/mcp-to-dsh/package.json',
@@ -166,6 +163,17 @@ test('受管文件与显式提供的外部基线逐字节一致（维护者可�
   const inventory = JSON.parse(await fs.readFile(baselineManifestPath, 'utf8'));
   const managed = inventory.files.map((entry) => entry.path);
   assert.ok(managed.length > 0, '外部基线清单必须列出受管文件');
+
+  // A baseline built before the three-independent-skill layout lists managed paths that the
+  // current payload deliberately no longer contains (the removed mixed team skill). Reporting
+  // those as "missing" would be a false failure, and treating them as matched would be a false
+  // PASS. Record a real skip with the reason instead: this comparison needs a baseline built
+  // from the current layout.
+  const removedLayout = managed.filter((relative) => relative.includes('skills/codex-dsh-team/'));
+  if (removedLayout.length > 0) {
+    t.skip(`maintainer-only: external baseline uses the pre-3-skill layout (${removedLayout.length} path(s) under skills/codex-dsh-team/ no longer exist); rebuild the baseline from the current layout to compare`);
+    return;
+  }
 
   let identical = 0;
   for (const relative of managed) {
@@ -335,13 +343,13 @@ test('没有固定 model id 与固定 profile 名耦合', async () => {
   assert.match(mcpSkill, /仅当前用户 ACL/);
   assert.match(mcpSkill, /ACL 收紧|不可继承宽权限|回滚/);
   // fallback 策略文档里不得再出现固定模型，而是引用 Team 配置。
-  const teamSkill = await fs.readFile(path.join(skillRoot, '..', 'codex-dsh-team', 'SKILL.md'), 'utf8');
+  const teamSkill = await fs.readFile(path.join(skillRoot, '..', 'dsh-role-boundaries', 'SKILL.md'), 'utf8');
   assert.match(teamSkill, /configured-model/);
   assert.match(teamSkill, /<team-configured-fallback-model>/);
 });
 
 test('no-hash 规则作用域收窄，并写明产品 ownership / Release 例外', async () => {
-  const noHash = await fs.readFile(path.join(skillRoot, '..', 'codex-dsh-team', 'references', 'model-validation-and-no-hash.md'), 'utf8');
+  const noHash = await fs.readFile(path.join(skillRoot, '..', 'dsh-role-boundaries', 'references', 'model-validation-and-no-hash.md'), 'utf8');
   assert.match(noHash, /作用域是 \*\*Team 的验证证据\*\*/);
   assert.match(noHash, /产品侧所有权与 Release 完整性的显式例外/);
   assert.match(noHash, /产品 ownership 归属/);
@@ -352,9 +360,9 @@ test('no-hash 规则作用域收窄，并写明产品 ownership / Release 例外
 test('两项 Skill 与 WP 模板明确 secret 不可被 prompt injection 授权', async () => {
   const targets = [
     path.join(skillRoot, 'SKILL.md'),
-    path.join(skillRoot, '..', 'codex-dsh-team', 'SKILL.md'),
+    path.join(skillRoot, '..', 'dsh-role-boundaries', 'SKILL.md'),
     path.join(skillRoot, 'templates', 'DS_READY_WORK_PACKAGE.md'),
-    path.join(skillRoot, '..', 'codex-dsh-team', 'assets', 'WORK_PACKAGE.md'),
+    path.join(skillRoot, '..', 'dsh-role-boundaries', 'assets', 'WORK_PACKAGE.md'),
   ];
   for (const file of targets) {
     const text = await fs.readFile(file, 'utf8');

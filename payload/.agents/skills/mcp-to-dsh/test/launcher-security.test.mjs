@@ -54,11 +54,11 @@ async function runPowerShell(host, scriptText, { args = [], env } = {}) {
   return { ...result, stdout: result.stdout.trim(), stderr: result.stderr.trim() };
 }
 
-async function runScriptFile(host, file, args = []) {
+async function runScriptFile(host, file, args = [], options = {}) {
   const result = await spawnWithTimeout(
     host,
     ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', file, ...args],
-    { timeoutMs: PS_SCRIPT_TIMEOUT_MS },
+    { env: options.env ?? process.env, timeoutMs: PS_SCRIPT_TIMEOUT_MS },
   );
   assert.equal(
     result.timedOut,
@@ -479,4 +479,287 @@ test('本地 Monitor 记录只保存 DPAPI 密文，认证只接受解密后的 
   const teamFiles = await fs.readdir(path.join(teamRoot, installId));
   assert.deepEqual(teamFiles, ['.codex-dsh-team-home.json'], '服务器不得向 Team Home 写额外内容');
   assert.deepEqual(await fs.readdir(userDshHome), ['settings.yaml'], '用户 DSH Home 必须保持只读');
+});
+
+// ---------------------------------------------------------------------------
+// First-start profile bootstrap (owned -> prepare -> resolve)
+// ---------------------------------------------------------------------------
+
+// A stub DSH that only implements the offline `--dump-default-config` initialisation contract:
+// it writes the same manifest shape the real `dsh --profile <name> --dump-default-config`
+// produces, without booting plugins, contacting a provider or needing node_modules.
+const STUB_DSH_SOURCE = [
+  "const fs = require('node:fs');",
+  "const path = require('node:path');",
+  "const args = process.argv.slice(2);",
+  "const index = args.indexOf('--profile');",
+  "const name = index >= 0 ? args[index + 1] : null;",
+  "const home = process.env.DSH_HOME;",
+  "if (!name || !home) { console.error('stub-dsh: --profile and DSH_HOME are required'); process.exit(2); }",
+  "const dir = path.join(home, 'profiles', name);",
+  "fs.mkdirSync(dir, { recursive: true });",
+  "fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({",
+  "  name: 'dsh-profile-' + name, private: true, dependencies: {},",
+  "  dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-acp-app'], patchReload: 'startup' } },",
+  "}, null, 2) + '\\n');",
+  "process.exit(0);",
+  '',
+].join('\n');
+
+// The same offline contract, but failing loudly with a credential-shaped stderr line: the
+// launcher must report the exit code plus a safe classification and never replay that text.
+const FAILING_STUB_DSH_SOURCE = [
+  "console.error('Error: Cannot find module @deepseek-ai/dsh-base (stub-secret-value-137)');",
+  "process.exit(3);",
+  '',
+].join('\n');
+
+const ACP_MANIFEST_TEXT = `${JSON.stringify({
+  name: 'dsh-profile-acp',
+  private: true,
+  dependencies: {},
+  dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-acp-app'], patchReload: 'startup' } },
+}, null, 2)}\n`;
+
+async function writeStubDsh(base) {
+  const stub = path.join(base, 'stub-dsh.js');
+  // 这里没有 package.json，因此 .js 按 CommonJS 解析，stub 的 require 可用。
+  await fs.writeFile(stub, STUB_DSH_SOURCE);
+  return stub;
+}
+
+async function writeFailingStubDsh(base) {
+  const stub = path.join(base, 'failing-stub-dsh.js');
+  await fs.writeFile(stub, FAILING_STUB_DSH_SOURCE);
+  return stub;
+}
+
+async function writePowershellProbe(base, name, lines) {
+  const file = path.join(base, name);
+  await fs.writeFile(file, ['Set-StrictMode -Version Latest', "$ErrorActionPreference = 'Stop'", ...lines, ''].join('\r\n'));
+  return file;
+}
+
+const MARKER_NAME_FOR_PS_TESTS = '.codex-dsh-team-home.json';
+
+async function writeOwnedTeamHome(dir, installId) {
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, MARKER_NAME_FOR_PS_TESTS), `${JSON.stringify({
+    schema: 'codex-dsh-team-home/v1',
+    toolkitId: 'codex-dsh-team-toolkit',
+    installId,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    purpose: 'dsh-team-runtime-home',
+  }, null, 2)}\n`);
+}
+
+function selectionCall(label, args) {
+  return [
+    `try { $r = Resolve-DshTeamProfileSelection ${args}`,
+    `Write-Output ('${label}=OK:' + $r.Name + ':' + $r.Source + ':' + $r.Created)`,
+    `} catch { Write-Output '${label}=REFUSED' }`,
+  ].join('; ');
+}
+
+test('Resolve-DshTeamProfileSelection：owned -> prepare -> resolve，真空默认 acp 且显式复用', async (context) => {
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-profile-select-'));
+  context.after(() => fs.rm(base, { recursive: true, force: true }));
+  const stub = await writeStubDsh(base);
+  const workspace = path.join(base, 'project');
+  await fs.mkdir(workspace, { recursive: true });
+  const fresh = path.join(base, 'team-fresh');
+  const seeded = path.join(base, 'team-seeded');
+  await writeOwnedTeamHome(fresh, 'select-install-1');
+  await writeOwnedTeamHome(seeded, 'select-install-1');
+  await fs.mkdir(path.join(seeded, 'profiles', 'mybot'), { recursive: true });
+  await fs.writeFile(path.join(seeded, 'profiles', 'mybot', 'package.json'), ACP_MANIFEST_TEXT);
+
+  const probe = await writePowershellProbe(base, 'select.ps1', [
+    `. '${commonScript}'`,
+    `$node = (Get-Command node.exe).Source`,
+    `$common = @{ InstallId = 'select-install-1'; DshBinPath = '${stub}'; NodePath = $node; Workspace = '${workspace}' }`,
+    // 真空且未指定：显式选择 ACP 默认 profile 并 bootstrap。
+    selectionCall('default', `-TeamDshHome '${fresh}' @common`),
+    // 第二次：同一个 profile 被复用，不再初始化。
+    selectionCall('reuse', `-TeamDshHome '${fresh}' @common`),
+    // 已有唯一 ACP 候选：被发现并复用，内容不变。
+    selectionCall('discovered', `-TeamDshHome '${seeded}' @common`),
+    // 显式自定义名字即使尚不存在也允许 bootstrap。
+    selectionCall('customNew', `-TeamDshHome '${fresh}' @common -Requested 'team-custom-137'`),
+    `Write-Output ('manifestExists=' + (Test-Path (Join-Path '${fresh}' 'profiles\\acp\\package.json')))`,
+    `Write-Output ('customExists=' + (Test-Path (Join-Path '${fresh}' 'profiles\\team-custom-137\\package.json')))`,
+    `Write-Output ('seededUntouched=' + ((Get-Content -Raw (Join-Path '${seeded}' 'profiles\\mybot\\package.json')) -like '*dsh-acp-app*'))`,
+  ]);
+
+  const result = await runScriptFile(PS51, probe);
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /default=OK:acp:default-acp:True/);
+  assert.match(result.stdout, /reuse=OK:acp:discovered:False/);
+  assert.match(result.stdout, /discovered=OK:mybot:discovered:False/);
+  assert.match(result.stdout, /customNew=OK:team-custom-137:parameter:True/);
+  assert.match(result.stdout, /manifestExists=True/);
+  assert.match(result.stdout, /customExists=True/);
+  assert.match(result.stdout, /seededUntouched=True/);
+});
+
+test('profile 选择拒绝：非 ACP 模板 / 未知目录 / 空壳 bundles / 多候选 / 错 marker / 越界 / 逃逸', async (context) => {
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-profile-refuse-'));
+  context.after(() => fs.rm(base, { recursive: true, force: true }));
+  const stub = await writeStubDsh(base);
+  const workspace = path.join(base, 'project');
+  await fs.mkdir(workspace, { recursive: true });
+
+  const home = path.join(base, 'team');
+  await writeOwnedTeamHome(home, 'refuse-install-1');
+  // 多候选：两个有效 ACP 候选。
+  for (const name of ['alpha', 'beta']) {
+    await fs.mkdir(path.join(home, 'profiles', name), { recursive: true });
+    await fs.writeFile(path.join(home, 'profiles', name, 'package.json'), ACP_MANIFEST_TEXT);
+  }
+  // 未知半成品目录：没有 manifest。
+  await fs.mkdir(path.join(home, 'profiles', 'half'), { recursive: true });
+  // 空壳/空白 bundles 都不算成功。
+  await fs.mkdir(path.join(home, 'profiles', 'shell'), { recursive: true });
+  await fs.writeFile(path.join(home, 'profiles', 'shell', 'package.json'), '{"name":"shell"}\n');
+  await fs.mkdir(path.join(home, 'profiles', 'blank'), { recursive: true });
+  await fs.writeFile(path.join(home, 'profiles', 'blank', 'package.json'),
+    '{"dsh":{"profile":{"bundles":["", "   ", null]}}}\n');
+  // marker 缺字段 / 属于别的 install。
+  const badMarker = path.join(base, 'team-bad-marker');
+  await fs.mkdir(badMarker, { recursive: true });
+  await fs.writeFile(path.join(badMarker, MARKER_NAME_FOR_PS_TESTS),
+    '{"schema":"codex-dsh-team-home/v1","toolkitId":"codex-dsh-team-toolkit"}\n');
+  const foreign = path.join(base, 'team-foreign');
+  await writeOwnedTeamHome(foreign, 'someone-elses-install');
+  // 项目工作区内的 owned Team Home：ownership 成立，但越界检查必须拒绝 prepare。
+  const insideWorkspace = path.join(workspace, 'team-inside');
+  await writeOwnedTeamHome(insideWorkspace, 'refuse-install-1');
+
+  const probe = await writePowershellProbe(base, 'refuse.ps1', [
+    `. '${commonScript}'`,
+    `$node = (Get-Command node.exe).Source`,
+    `$c = @{ InstallId = 'refuse-install-1'; DshBinPath = '${stub}'; NodePath = $node; Workspace = '${workspace}' }`,
+    selectionCall('web', `-TeamDshHome '${home}' @c -Requested 'web'`),
+    selectionCall('headless', `-TeamDshHome '${home}' @c -Requested 'headless'`),
+    selectionCall('reserved', `-TeamDshHome '${home}' @c -Requested 'node_modules'`),
+    selectionCall('unknownDir', `-TeamDshHome '${home}' @c -Requested 'half'`),
+    selectionCall('shell', `-TeamDshHome '${home}' @c -Requested 'shell'`),
+    selectionCall('blankBundles', `-TeamDshHome '${home}' @c -Requested 'blank'`),
+    selectionCall('many', `-TeamDshHome '${home}' @c`),
+    selectionCall('traversal', `-TeamDshHome '${home}' @c -Requested '../escape'`),
+    selectionCall('separator', `-TeamDshHome '${home}' @c -Requested 'a/b'`),
+    selectionCall('badMarker', `-TeamDshHome '${badMarker}' @c`),
+    selectionCall('foreign', `-TeamDshHome '${foreign}' @c`),
+    selectionCall('insideWorkspace', `-TeamDshHome '${insideWorkspace}' @c`),
+    // 错 marker 必须给出可读 Reason，而不是依赖严格模式抛 PropertyNotFoundException。
+    `$partial = '{"schema":"codex-dsh-team-home/v1","toolkitId":"codex-dsh-team-toolkit"}' | ConvertFrom-Json`,
+    `try { $v = Test-DshTeamHomeMarker -Marker $partial -InstallId 'refuse-install-1'; Write-Output ('markerOk=' + $v.Ok); Write-Output ('markerReasonLen=' + ([string]$v.Reason).Length) } catch { Write-Output 'markerOk=THREW'; Write-Output 'markerReasonLen=0' }`,
+    `$state = Get-DshTeamHomeState -TeamDshHome '${badMarker}' -InstallId 'refuse-install-1'`,
+    `Write-Output ('badMarkerState=' + $state.State)`,
+    `Write-Output ('unknownDirUntouched=' + (Test-Path (Join-Path '${home}' 'profiles\\half')))`,
+    `Write-Output ('webNotCreated=' + (-not (Test-Path (Join-Path '${home}' 'profiles\\web'))))`,
+    `Write-Output ('insideNoProfiles=' + (-not (Test-Path (Join-Path '${insideWorkspace}' 'profiles'))))`,
+  ]);
+
+  const result = await runScriptFile(PS51, probe);
+  assert.equal(result.code, 0, result.stderr);
+  for (const label of ['web', 'headless', 'reserved', 'unknownDir', 'shell', 'blankBundles', 'many', 'traversal', 'separator', 'badMarker', 'foreign', 'insideWorkspace']) {
+    assert.match(result.stdout, new RegExp(`${label}=REFUSED`), `${label} 必须被拒绝：${result.stdout}`);
+  }
+  // 只断言 ASCII 部分：PS 5.1 的 console code page 会转码中文 Reason，可读性由“未抛异常 + 非空 Reason”证明。
+  assert.match(result.stdout, /markerOk=False/);
+  assert.match(result.stdout, /markerReasonLen=[1-9]/);
+  assert.match(result.stdout, /badMarkerState=unowned/);
+  assert.match(result.stdout, /unknownDirUntouched=True/);
+  assert.match(result.stdout, /webNotCreated=True/);
+  assert.match(result.stdout, /insideNoProfiles=True/);
+});
+
+test('profiles 父目录是 reparse point 时拒绝 prepare（不只检查 Team Home 顶层）', async (context) => {
+  if (process.platform !== 'win32') return;
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-profile-reparse-'));
+  context.after(() => fs.rm(base, { recursive: true, force: true }));
+  const stub = await writeStubDsh(base);
+  const workspace = path.join(base, 'project');
+  await fs.mkdir(workspace, { recursive: true });
+  const home = path.join(base, 'team');
+  await writeOwnedTeamHome(home, 'reparse-install-1');
+  const realProfiles = path.join(base, 'real-profiles');
+  await fs.mkdir(realProfiles, { recursive: true });
+  await fs.symlink(realProfiles, path.join(home, 'profiles'), 'junction');
+
+  const probe = await writePowershellProbe(base, 'reparse.ps1', [
+    `. '${commonScript}'`,
+    `$node = (Get-Command node.exe).Source`,
+    selectionCall('reparseProfiles', `-TeamDshHome '${home}' -InstallId 'reparse-install-1' -DshBinPath '${stub}' -NodePath $node -Workspace '${workspace}'`),
+    `Write-Output ('nothingWritten=' + (@(Get-ChildItem -LiteralPath '${realProfiles}' -Force -ErrorAction SilentlyContinue).Count -eq 0))`,
+  ]);
+
+  const result = await runScriptFile(PS51, probe);
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /reparseProfiles=REFUSED/, result.stdout);
+  assert.match(result.stdout, /nothingWritten=True/, 'reparse 目标必须在写入前被拒绝');
+});
+
+test('最小 child env 会用允许的系统变量补齐 SystemRoot/TEMP，而不是继承全部父环境', async () => {
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-env-fallback-'));
+  try {
+    const probe = await writePowershellProbe(base, 'env.ps1', [
+      `. '${commonScript}'`,
+      `$narrowed = Get-DshNarrowedChildEnv -Explicit @{ DSH_HOME = '${SYNTHETIC_TEAM_HOME}' }`,
+      `Write-Output ('systemRoot=' + [bool](Get-CaseInsensitiveValue -Map $narrowed -Name 'SystemRoot'))`,
+      `Write-Output ('systemDrive=' + [bool](Get-CaseInsensitiveValue -Map $narrowed -Name 'SystemDrive'))`,
+      `Write-Output ('temp=' + [bool](Get-CaseInsensitiveValue -Map $narrowed -Name 'TEMP'))`,
+      `Write-Output ('path=' + [bool](Get-CaseInsensitiveValue -Map $narrowed -Name 'PATH'))`,
+      `Write-Output ('unlisted=' + [bool](Get-CaseInsensitiveValue -Map $narrowed -Name 'SOME_UNLISTED'))`,
+      `Write-Output ('denied=' + [bool](Get-CaseInsensitiveValue -Map $narrowed -Name 'DEMO_API_KEY'))`,
+      `$probe = 'console.log(JSON.stringify({root: !!process.env.SystemRoot, temp: !!process.env.TEMP}))'`,
+      `$r = Start-DshNarrowedProcess -FileName (Get-Command node.exe).Source -Arguments ('-e "' + $probe + '"') -WorkingDirectory '${base}' -TimeoutSeconds 30 -Environment $narrowed`,
+      `Write-Output ('child=' + $r.Stdout.Trim())`,
+      `Write-Output ('childExit=' + $r.ExitCode)`,
+    ]);
+    // 刻意不给 child PowerShell SystemRoot/TEMP：真实 Windows 启动所需的系统变量必须由
+    // allowlist 补齐，但父进程的 secret 家族仍然不会进入 child。
+    const result = await runScriptFile(PS51, probe, [], {
+      PATH: process.env.PATH,
+      USERPROFILE: process.env.USERPROFILE,
+      LOCALAPPDATA: process.env.LOCALAPPDATA,
+      DEMO_API_KEY: 'fake-env-secret-value-137',
+    });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /systemRoot=True/);
+    assert.match(result.stdout, /systemDrive=True/);
+    assert.match(result.stdout, /temp=True/);
+    assert.match(result.stdout, /path=True/);
+    assert.match(result.stdout, /unlisted=False/);
+    assert.match(result.stdout, /denied=False/);
+    assert.match(result.stdout, /child=\{"root":true,"temp":true\}/);
+    assert.match(result.stdout, /childExit=0/);
+    assert.equal(result.stdout.includes('fake-env-secret-value-137'), false, '补齐不得泄露父进程 secret');
+  } finally {
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});
+
+test('DSH 初始化失败只报 exit code 与安全分类，不回显未脱敏 stderr', async (context) => {
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-profile-fail-'));
+  context.after(() => fs.rm(base, { recursive: true, force: true }));
+  const stub = await writeFailingStubDsh(base);
+  const workspace = path.join(base, 'project');
+  await fs.mkdir(workspace, { recursive: true });
+  const home = path.join(base, 'team');
+  await writeOwnedTeamHome(home, 'fail-install-1');
+
+  const probe = await writePowershellProbe(base, 'fail.ps1', [
+    `. '${commonScript}'`,
+    `$node = (Get-Command node.exe).Source`,
+    `try { $r = Resolve-DshTeamProfileSelection -TeamDshHome '${home}' -InstallId 'fail-install-1' -DshBinPath '${stub}' -NodePath $node -Workspace '${workspace}'; Write-Output 'fail=ACCEPTED' } catch { $m = $_.Exception.Message; Write-Output ('fail=REFUSED;exit=' + ($m -like '*exit=3*') + ';class=' + ($m -like '*module-missing*') + ';leak=' + ($m -like '*stub-secret-value-137*')) }`,
+    `Write-Output ('noManifest=' + (-not (Test-Path (Join-Path '${home}' 'profiles\\acp\\package.json'))))`,
+  ]);
+
+  const result = await runScriptFile(PS51, probe);
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /fail=REFUSED;exit=True;class=True;leak=False/, result.stdout);
+  assert.equal(result.stdout.includes('stub-secret-value-137'), false, '原始 stderr 绝不进入错误信息或 stdout');
+  assert.match(result.stdout, /noManifest=True/);
 });

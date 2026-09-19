@@ -3,35 +3,60 @@
 All notable changes to the Codex × DSH Team Toolkit are recorded here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
-## [1.0.0] — 2026-09-15
+## [Unreleased]
 
-The first public release. This version provides:
+Nothing beyond `1.1.0` yet.
 
-- **A manifest-owned installer.** `CodexDshTeamToolkit.Install.exe` (package root) or
-  `Install.cmd` installs the managed skill files declared by `release/payload-inventory.json`
-  into an existing project. Unknown same-name files block the whole operation instead of being
-  overwritten.
-- **Thin launchers.** `CodexDshTeamToolkit.Install.exe` and
-  `CodexDshTeamToolkit.Uninstall.exe` are small framework-dependent C# shells that locate the
-  package and the project, show the plan produced by the shared engine, confirm, call that
-  engine and forward its exit code. The installer launcher is package-only: it is never
-  installed into a project and never enters the ownership ledger. The uninstaller is different
-  by design — it **is** installed into the target project root as a managed file and **is**
-  recorded in the ownership ledger, so the project can uninstall itself later.
-- **Pristine-byte ownership.** Each managed file keeps a `pristine/<path>` copy of the exact
-  installed bytes under the project's `.codex-dsh-team-toolkit/` state directory. A file is
-  replaced or deleted only while it is byte-identical to that baseline, so a hand-edited file is
-  preserved and reported. No checksum, hash or digest is computed, stored or trusted.
-- **Transactional install, upgrade and uninstall.** Plan → read-only package preflight →
-  exclusive lock → durable journal + backup → same-directory temp + atomic replace → verify →
-  atomic ledger commit, with a verified reverse rollback and an in-lock TOCTOU guard.
-- **Offline release tooling.** `tools/Build-Release.ps1` and `tools/Verify-Release.ps1` build and
-  check a package with no network access and no push, and produce no checksum artefact.
-- **A safety test suite.** `tests/` covers install, ownership, transactions, uninstall, path
-  policy, confidentiality, relocation, recovery/TOCTOU, Windows hygiene, release tooling and the
-  thin EXE, using temporary directories and fake credentials only.
-- **Documentation.** `docs/` covers installation, configuration, security and troubleshooting,
-  including the no-hash contract, credential/privacy rules and Windows-specific safety rules.
+## [1.1.0] — 2026-09-19 — **Pre-release**
 
-Runtime requirement: **Node ≥ 22.19.0**, with the DSH runtime dependency pinned and tested
-against `@deepseek-ai/dsh 0.1.5-rc.1`.
+Published as a **pre-release**, not a stable release. Open items remain (see below), so this
+version is offered for evaluation rather than as a finished product.
+
+- **Three independent Skills.** The payload now ships `codex-team` (universal multi-role template),
+  `dsh-role-boundaries` (what DSH may and may not be given) and `mcp-to-dsh` (DSH call path and
+  Monitor). They do not inherit from or load each other; a caller reads the ones a task needs.
+- **Complete-package installation is the primary path.** One run of the package-root installer
+  (`CodexDshTeamToolkit.Install.exe` or `Install.cmd`) writes all three Skills into an existing
+  project's `.agents/skills/` in one pass, together with the project-root launchers and the thin
+  uninstaller; everything is declared by the package inventory and tracked in the ownership ledger.
+- **Replaced the older mixed team skill.** The previous single `codex-dsh-team` skill is gone.
+  Upgrades do **not** remove it automatically — the installer keeps it as `retained`, so migrate by
+  uninstalling the old managed files first; see
+  [docs/INSTALLATION.md](docs/INSTALLATION.md#migrating-from-the-older-mixed-team-skill).
+- **Bilingual documentation.** `README.md` (English) and `README.zh-CN.md` (Chinese) are kept in
+  step and cross-linked, and the `docs/` set covers installation, configuration, security and
+  troubleshooting.
+- **Security disclosures corrected.** The docs now distinguish message redaction from the byte
+  copies the toolkit deliberately keeps (`pristine/` baselines, transaction `backup/` and
+  `quarantine/`, the credential copy in the owned Team Home), state the DSH execution permission
+  and automatic tool-approval behaviour, and tell you which runtime output directories to ignore in
+  your own project.
+- **Dependencies.** The payload's own package version is `1.1.0`; runtime requirement is
+  **Node ≥ 22.19.0** with the DSH runtime dependency pinned and tested against
+  `@deepseek-ai/dsh 0.1.5-rc.1`.
+- **First start now prepares the ACP profile itself.** The installer stays an offline file copy and
+  no longer needs to pre-place a profile: after `npm ci` in the installed skill directory, the
+  launcher prepares the ACP configuration inside the **owned Team Home** from the installed, pinned
+  DSH's own template (a custom profile name is initialised with that DSH's
+  `--from-default-profile acp`). No hand-written `package.json` and no second dependency tree
+  inside the profile directory are required.
+- **One profile name, consistently routed.** The ACP profile travels as one explicit value from the
+  launcher (`-TeamProfile`, or `CODEX_DSH_TEAM_PROFILE`) to the Monitor (`--dsh-profile`, echoed in
+  `/api/health` as `dshProfile` and in the local Monitor record as `dsh_profile`), to the bridge
+  child as `CODEX_DSH_ACP_PROFILE`, and to the one-click configuration sync as `-TeamProfile`, so a
+  task can never be planned under one profile while the DSH child runs another. Monitor reuse
+  requires workspace, Team Home **and** profile to match; a legacy record or health projection
+  without the field is read as the historical `acp`. The name is resolved as `-TeamProfile` →
+  `CODEX_DSH_TEAM_PROFILE` → the one optional profile already in the owned Team Home → the default
+  `acp`, which is then prepared; only **several** existing optional profiles are ambiguous and must
+  be chosen explicitly, and the DSH built-in helper templates (`web`, `headless`, `sdk`,
+  `sdk-minimal`) are ignored as candidates and refused as the Team ACP entry (as is the reserved
+  name `node_modules`).
+
+### Known limitations in this release
+
+- The PowerShell test entry can count a missing-dependency skip as a pass; install the payload
+  dependencies and read the Node suite's real results (including the SKIP count) before treating
+  the suite as fully executed.
+- Real provider runs, the GUI folder picker, and some ACL / credential / partial-permission
+  scenarios are not fully verified.

@@ -45,9 +45,9 @@ Test-Case -Name 'installer exe: the built shell is small and single purpose' -Bo
   $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
   Assert-Equal 0 ([int]$report.exitCode) 'the recorded compiler exit code must be 0'
   Assert-Equal '5' ([string]$report.langVersion) 'the shell must be built as C# 5'
-  Assert-Equal '1.0.0.0' ([string]$report.fileVersion) 'the EXE version must be aligned with the release'
+  Assert-Equal '1.1.0.0' ([string]$report.fileVersion) 'the EXE version must be aligned with the release'
   $version = (Get-Item -LiteralPath $exePath).VersionInfo
-  Assert-Equal '1.0.0.0' ([string]$version.FileVersion) 'the built EXE must carry the release file version'
+  Assert-Equal '1.1.0.0' ([string]$version.FileVersion) 'the built EXE must carry the release file version'
   Assert-Match ([string]$version.ProductName) 'Codex x DSH Team Toolkit' 'the EXE must identify the product'
 }
 

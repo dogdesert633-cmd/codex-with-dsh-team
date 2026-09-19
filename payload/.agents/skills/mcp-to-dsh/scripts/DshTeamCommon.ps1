@@ -209,8 +209,54 @@ $script:DshAcpBundleId = 'acp'
 
 function Get-DshAcpBundleId { return $script:DshAcpBundleId }
 
+# 0 个候选且未显式指定时使用的 ACP 默认 profile 名。集中命名一次，并在选择结果里显式说明
+# 它是默认值，而不是让调用方误以为存在一个“可发现”的既有 profile。
+$script:DshDefaultAcpProfileName = 'acp'
+# DSH 保留目录名与 DSH 内置 profile 模板名。
+#   - Node 会解析 `node_modules`，它绝不能作为 profile 目录名。
+#   - web/headless/sdk/sdk-minimal 是 DSH 内置模板，但不是 ACP 子代理入口；把它们初始化后
+#     当作 ACP 入口属于错误接线，因此明确拒绝。
+$script:DshShippedProfileNames = @('acp', 'web', 'headless', 'sdk', 'sdk-minimal')
+$script:DshNonAcpShippedProfileNames = @('web', 'headless', 'sdk', 'sdk-minimal')
+$script:DshReservedProfileNames = @('node_modules')
+$script:DshTeamProfileNamePattern = '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+
+# 名字合法性 + 保留名 + 非 ACP 内置模板拒绝。任何 prepare/初始化之前都必须先过这一关。
+function Assert-DshTeamProfileName {
+    param([Parameter(Mandatory)][string]$Name)
+    $trimmed = ([string]$Name).Trim()
+    if (-not $trimmed) { throw 'TeamProfile 不能为空。' }
+    if ($trimmed -notmatch $script:DshTeamProfileNamePattern) {
+        throw "TeamProfile 必须是 1-64 位字母/数字/._- 且以字母或数字开头：$trimmed"
+    }
+    if ($script:DshReservedProfileNames -contains $trimmed) {
+        throw "TeamProfile 不能使用 DSH 保留目录名 '$trimmed'。"
+    }
+    if ($script:DshNonAcpShippedProfileNames -contains $trimmed) {
+        throw ("Team profile '$trimmed' 是 DSH 内置的非 ACP 模板（web/headless/sdk），不能作为 Codex x DSH Team 的 ACP 入口。请使用 'acp'，或使用自定义名字（自定义名字会用官方 --from-default-profile acp 初始化）。")
+    }
+    return $trimmed
+}
+
+# 已存在、且可作为 ACP 入口的 profile 候选。node_modules 与非 ACP 内置模板都不计入，
+# 因此“Team Home 里只有一个 web profile”不会被误当成可用的 ACP 入口。
+function Get-DshTeamProfileCandidates {
+    param([Parameter(Mandatory)][string]$TeamDshHome)
+    $profilesRoot = Join-Path $TeamDshHome 'profiles'
+    $found = New-Object System.Collections.Generic.List[string]
+    if (-not (Test-Path -LiteralPath $profilesRoot -PathType Container)) { return @() }
+    foreach ($dir in (Get-ChildItem -LiteralPath $profilesRoot -Directory -ErrorAction SilentlyContinue)) {
+        if ($script:DshReservedProfileNames -contains $dir.Name) { continue }
+        if ($script:DshNonAcpShippedProfileNames -contains $dir.Name) { continue }
+        if (Test-Path -LiteralPath (Join-Path $dir.FullName 'package.json') -PathType Leaf) {
+            $found.Add($dir.Name)
+        }
+    }
+    return @($found)
+}
+
 # Team profile 是 owned Team Home 下 profiles\<name> 目录名，必须由配置或可验证发现决定，
-# 不允许静默默认：显式参数 > 环境变量 > Team Home 内唯一带 package.json 的 profile。
+# 不允许静默默认：显式参数 > 环境变量 > Team Home 内唯一带 package.json 的 ACP 候选。
 # 0 个或多个候选一律 fail-visible，绝不猜一个可写 profile。
 function Resolve-DshTeamProfile {
     param(
@@ -221,32 +267,233 @@ function Resolve-DshTeamProfile {
     $candidate = $Requested
     if (-not $candidate) { $candidate = $EnvironmentValue }
     if ($candidate) {
-        $candidate = $candidate.Trim()
-        if ($candidate -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$') {
-            throw "TeamProfile 必须是 1-64 位字母/数字/._- 且以字母或数字开头：$candidate"
-        }
-        $manifest = Join-Path (Join-Path $TeamDshHome 'profiles') (Join-Path $candidate 'package.json')
+        $name = Assert-DshTeamProfileName -Name $candidate
+        $manifest = Join-Path (Join-Path $TeamDshHome 'profiles') (Join-Path $name 'package.json')
         if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
-            throw "指定的 TeamProfile '$candidate' 在 Team Home $TeamDshHome 中不存在（缺少 $manifest）。"
+            throw "指定的 TeamProfile '$name' 在 Team Home $TeamDshHome 中不存在（缺少 $manifest）。"
         }
-        return $candidate
+        return $name
     }
 
-    $profilesRoot = Join-Path $TeamDshHome 'profiles'
-    $found = New-Object System.Collections.Generic.List[string]
-    if (Test-Path -LiteralPath $profilesRoot -PathType Container) {
-        foreach ($dir in (Get-ChildItem -LiteralPath $profilesRoot -Directory -ErrorAction SilentlyContinue)) {
-            if ($dir.Name -eq 'node_modules') { continue }
-            if (Test-Path -LiteralPath (Join-Path $dir.FullName 'package.json') -PathType Leaf) {
-                $found.Add($dir.Name)
-            }
-        }
-    }
+    $found = @(Get-DshTeamProfileCandidates -TeamDshHome $TeamDshHome)
     if ($found.Count -eq 1) { return $found[0] }
     if ($found.Count -eq 0) {
-        throw ("Team Home {0} 里找不到任何带 package.json 的 profile；请用 -TeamProfile 或 CODEX_DSH_TEAM_PROFILE 指定，或先由安装器预置 Team runtime。" -f $TeamDshHome)
+        throw ("Team Home {0} 里找不到任何带 package.json 的 ACP profile；请用 -TeamProfile 或 CODEX_DSH_TEAM_PROFILE 指定，或让工具按约定初始化默认 ACP profile。" -f $TeamDshHome)
     }
     throw ("Team Home {0} 存在多个候选 profile，无法安全推断可写目标：{1}。请用 -TeamProfile 或 CODEX_DSH_TEAM_PROFILE 明确指定。" -f $TeamDshHome, ($found -join ', '))
+}
+
+# Read `dsh.profile.bundles` from a profile manifest. Returns @() when the manifest is absent,
+# unparsable, or has no usable bundle list - an empty shell must never count as initialized.
+# 只接受非空字符串条目：null、空白、数字/对象都不算“有效 bundle”，避免把空壳当成功。
+function Get-DshProfileBundles {
+    param([Parameter(Mandatory)][string]$ManifestPath)
+    if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) { return @() }
+    $manifest = $null
+    try {
+        $manifest = ConvertFrom-Json -InputObject (Get-Content -LiteralPath $ManifestPath -Raw -Encoding UTF8)
+    }
+    catch {
+        return @()
+    }
+    if ($null -eq $manifest) { return @() }
+    $dshNode = Get-CaseInsensitiveValue -Map $manifest -Name 'dsh'
+    if ($null -eq $dshNode) { return @() }
+    $profileNode = Get-CaseInsensitiveValue -Map $dshNode -Name 'profile'
+    if ($null -eq $profileNode) { return @() }
+    $bundles = Get-CaseInsensitiveValue -Map $profileNode -Name 'bundles'
+    if ($null -eq $bundles) { return @() }
+    $valid = New-Object System.Collections.Generic.List[string]
+    foreach ($item in @($bundles)) {
+        if ($null -eq $item) { continue }
+        if ($item -isnot [string]) { continue }
+        $text = ([string]$item).Trim()
+        if (-not $text) { continue }
+        $valid.Add($text)
+    }
+    return @($valid)
+}
+
+# True only when a bundle list really declares the ACP app bundle. Used to prove that a profile
+# this toolkit just initialized is an ACP entry, not a web/headless/sdk template.
+function Test-DshAcpCapableBundles {
+    param([string[]]$Bundles = @())
+    foreach ($bundle in @($Bundles)) {
+        $name = ([string]$bundle).Trim()
+        if (-not $name) { continue }
+        if ($name -ieq $script:DshAcpBundleId) { return $true }
+        if ($name -imatch '(^|[/@-])dsh-acp-app$') { return $true }
+    }
+    return $false
+}
+
+# First-start bootstrap for a brand-new owned Team Home.
+#
+# DSH itself initializes `profiles/<name>` from its shipped template on first use; the toolkit
+# previously required the profile to already exist, so a fresh install could never start. This
+# triggers that initialization through DSH's own offline diagnostic entry point
+# (`--dump-default-config`: it composes patches and prints them - it does not boot plugins,
+# open a model session or contact a provider), then verifies DSH actually wrote a usable
+# manifest with a non-empty ACP bundle list. A bare directory, an empty package.json or a
+# non-ACP template is never accepted as the ACP entry.
+#
+# Idempotent by design: an existing profile manifest is validated and left untouched, and an
+# existing directory without a manifest is refused rather than adopted.
+function Initialize-DshTeamProfile {
+    param(
+        [Parameter(Mandatory)][string]$TeamDshHome,
+        [Parameter(Mandatory)][string]$ProfileName,
+        [Parameter(Mandatory)][string]$DshBinPath,
+        [Parameter(Mandatory)][string]$NodePath,
+        [string]$Workspace,
+        [int]$TimeoutSeconds = 120
+    )
+    # 非 ACP 内置模板名（web/headless/sdk）在这一步就被拒绝，绝不可能被初始化为 ACP 入口。
+    $name = Assert-DshTeamProfileName -Name $ProfileName
+    $teamHome = [System.IO.Path]::GetFullPath($TeamDshHome)
+    $profilesRoot = Join-Path $teamHome 'profiles'
+    $profileDir = Join-Path $profilesRoot $name
+    # 写入链上的每一层都要防 reparse：Team Home、profiles 父目录、profile 目录本身，以及后续
+    # 的 package.json / cordis.patch.yml / 运行配置都挂在这条链上，只查 Team Home 顶层不够。
+    Assert-DshReparseFreePath -Path $teamHome -Label 'Team Home' | Out-Null
+    Assert-DshReparseFreePath -Path $profilesRoot -Label 'profiles 父目录' | Out-Null
+    Assert-DshReparseFreePath -Path $profileDir -Label 'profile 目录' | Out-Null
+    Assert-DshTeamHomeOutsideWorkspace -TeamDshHome $teamHome -Workspace $Workspace | Out-Null
+    if (-not (Test-DshPathInside -Parent $profilesRoot -Child $profileDir)) {
+        throw ("profile 目录越过 Team Home 的 profiles 根：{0}" -f $profileDir)
+    }
+    $manifest = Join-Path $profileDir 'package.json'
+    if (Test-Path -LiteralPath $manifest -PathType Leaf) {
+        # 已有 manifest：只验证“可用 bundles”，内容原样保留，绝不覆盖/重写。
+        $existingBundles = @(Get-DshProfileBundles -ManifestPath $manifest)
+        if ($existingBundles.Count -eq 0) {
+            throw ("Team Home 中已存在 profile '{0}'，但 {1} 没有有效的非空 dsh.profile.bundles；拒绝把空壳 manifest 当作可用 ACP profile，也不会覆盖它。请修复该 profile，或改用其它 -TeamProfile。" -f $name, $manifest)
+        }
+        return ([pscustomobject]@{
+                Name    = $name
+                Dir     = $profileDir
+                Created = $false
+                Bundles = $existingBundles
+            })
+    }
+    if (Test-Path -LiteralPath $profileDir -PathType Container) {
+        throw ("Team Home 中已存在 profile 目录 {0}，但其中没有 package.json；拒绝接管未知或半成品目录。请换一个 -TeamProfile 名称，或自行清理该目录后重试。" -f $profileDir)
+    }
+    if (-not (Test-Path -LiteralPath $DshBinPath -PathType Leaf)) {
+        throw ("找不到已锁定的 DSH 运行时：{0}；无法初始化 Team profile '{1}'。" -f $DshBinPath, $name)
+    }
+    if (-not (Test-Path -LiteralPath $NodePath -PathType Leaf)) {
+        throw ("找不到 node.exe：{0}；无法初始化 Team profile '{1}'。" -f $NodePath, $name)
+    }
+    # Explicit argument vector: shipped names take no --from-default-profile; a custom name is
+    # initialized from the shipped `acp` template (an existing directory never reaches here).
+    $dshArguments = New-Object System.Collections.Generic.List[string]
+    $dshArguments.Add('--profile')
+    $dshArguments.Add($name)
+    if ($script:DshShippedProfileNames -notcontains $name) {
+        $dshArguments.Add('--from-default-profile')
+        $dshArguments.Add($script:DshDefaultAcpProfileName)
+    }
+    $dshArguments.Add('--dump-default-config')
+    $diagnosticArguments = ($dshArguments -join ' ')
+    $argumentLine = ('"{0}" {1}' -f $DshBinPath, $diagnosticArguments)
+    # 最小但足以真实启动 Windows 子进程的环境：allowlist + 允许的系统变量补齐 + DSH_HOME。
+    # 只传 DSH_HOME 会在缺少 SystemRoot/TEMP 的宿主上让 node 启动失败，所以必须走
+    # Get-DshNarrowedChildEnv，而不是自己拼一个空环境或继承父进程全部变量。
+    $narrowedEnv = Get-DshNarrowedChildEnv -Explicit @{ DSH_HOME = $teamHome }
+    $result = Start-DshNarrowedProcess -FileName $NodePath -Arguments $argumentLine `
+        -WorkingDirectory $teamHome -TimeoutSeconds $TimeoutSeconds -Environment $narrowedEnv
+    if ($result.TimedOut) {
+        throw ("DSH profile 初始化超时（{0}s），未完成初始化；没有重试，也没有改动既有内容。" -f $TimeoutSeconds)
+    }
+    if ($result.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
+        # 不回显 DSH 的原始 stderr/stdout：那是不受控通道，可能含未脱敏的 provider 信息。
+        # 只报 exit code 与安全分类，并给出可本地复现的诊断命令。分类失败时为 unclassified。
+        $failureClass = Get-DshProcessFailureClass -Stdout $result.Stdout -Stderr $result.Stderr
+        throw ("DSH 未能为 profile '{0}' 初始化运行配置（exit={1}; 分类={2}）。请确认已锁定安装的 DSH 可用；可在本机复现诊断：node `"{3}`" {4}（原始输出可能含未脱敏 provider 信息，本工具不打印它）。" -f $name, $result.ExitCode, $failureClass, $DshBinPath, $diagnosticArguments)
+    }
+    $bundles = @(Get-DshProfileBundles -ManifestPath $manifest)
+    if ($bundles.Count -eq 0) {
+        throw ("profile '{0}' 的 package.json 缺少有效的非空 dsh.profile.bundles；拒绝把空壳当作初始化成功。" -f $name)
+    }
+    if (-not (Test-DshAcpCapableBundles -Bundles $bundles)) {
+        throw ("profile '{0}' 已初始化，但其 bundles（{1}）没有声明 ACP 运行入口；拒绝把它当作 ACP 入口。" -f $name, ($bundles -join ', '))
+    }
+    return ([pscustomobject]@{
+            Name    = $name
+            Dir     = $profileDir
+            Created = $true
+            Bundles = $bundles
+        })
+}
+
+# 两个入口（start_dsh_team.ps1 与独立 Sync-DshTeamConfig.ps1）共用的选择逻辑。
+# 顺序是刻意的：先证明 Team Home 属于本安装（owned），再 prepare（缺失时 bootstrap），
+# 最后 resolve 出最终名字。选择规则：显式参数 > 环境变量 > 既有唯一 ACP 候选；真空且未
+# 指定时显式选择 ACP 默认 profile 并写进 Notes，绝不静默猜测；多候选继续拒绝。
+function Resolve-DshTeamProfileSelection {
+    param(
+        [string]$Requested,
+        [Parameter(Mandatory)][string]$TeamDshHome,
+        [Parameter(Mandatory)][string]$InstallId,
+        [string]$EnvironmentValue,
+        [string]$DshBinPath,
+        [string]$NodePath,
+        [string]$Workspace,
+        [int]$TimeoutSeconds = 120
+    )
+    # 1) ownership：只有带完整 marker 且属于本 install 的 Team Home 才能被 prepare/写入。
+    $state = Get-DshTeamHomeState -TeamDshHome $TeamDshHome -InstallId $InstallId
+    if ($state.State -ne 'owned') {
+        throw ("拒绝在 {0} 上 prepare Team profile：状态={1}（{2}）。只有本安装拥有的 Team Home 才能被写入。" -f $TeamDshHome, $state.State, $state.Reason)
+    }
+
+    $notes = New-Object System.Collections.Generic.List[string]
+    $source = $null
+    $explicitName = $Requested
+    if (-not $explicitName) { $explicitName = $EnvironmentValue }
+    if ($explicitName) {
+        # 显式自定义名字即使尚不存在也允许 bootstrap；内置非 ACP 模板在这里就会被拒绝。
+        $name = Assert-DshTeamProfileName -Name $explicitName
+        $source = $(if ($Requested) { 'parameter' } else { 'environment' })
+    }
+    else {
+        $found = @(Get-DshTeamProfileCandidates -TeamDshHome $TeamDshHome)
+        if ($found.Count -gt 1) {
+            throw ("Team Home {0} 存在多个候选 profile，无法安全推断可写目标：{1}。请用 -TeamProfile 或 CODEX_DSH_TEAM_PROFILE 明确指定。" -f $TeamDshHome, ($found -join ', '))
+        }
+        if ($found.Count -eq 1) {
+            $name = $found[0]
+            $source = 'discovered'
+        }
+        else {
+            # 真空且未指定：按约定选择 ACP 默认 profile，并在输出里显式说明。
+            $name = $script:DshDefaultAcpProfileName
+            $source = 'default-acp'
+            $notes.Add(("Team Home 中没有任何 ACP profile；按约定使用默认 ACP profile '{0}' 并用官方 DSH 初始化它。" -f $name))
+        }
+    }
+
+    # 2) prepare：既有 manifest 只校验并保留；缺失时才用官方 DSH 初始化。
+    $prepared = Initialize-DshTeamProfile -TeamDshHome $TeamDshHome -ProfileName $name `
+        -DshBinPath $DshBinPath -NodePath $NodePath -Workspace $Workspace -TimeoutSeconds $TimeoutSeconds
+    if ($prepared.Created) {
+        $notes.Add(("已用官方 DSH 初始化 profile '{0}'（bundles: {1}）。" -f $prepared.Name, (@($prepared.Bundles) -join ', ')))
+    }
+    else {
+        $notes.Add(("复用已有 profile '{0}'（bundles: {1}），内容未被修改。" -f $prepared.Name, (@($prepared.Bundles) -join ', ')))
+    }
+
+    # 3) resolve：最终名字必须来自 Resolve-DshTeamProfile，而不是本函数内部推断。
+    $finalName = Resolve-DshTeamProfile -Requested $prepared.Name -TeamDshHome $TeamDshHome
+    return [pscustomobject]@{
+        Name    = $finalName
+        Dir     = $prepared.Dir
+        Created = [bool]$prepared.Created
+        Bundles = @($prepared.Bundles)
+        Source  = $source
+        Notes   = @($notes)
+    }
 }
 
 # Contract 必须绑定当前 workspace：相对路径、.md、无 '..'、无绝对/盘符/UNC、无 reparse，
@@ -298,11 +545,16 @@ function Get-DshTeamInstallIdentity {
     if (Test-Path -LiteralPath $ManifestPath -PathType Leaf) {
         try {
             $existing = Get-Content -Raw -LiteralPath $ManifestPath | ConvertFrom-Json
-            if ($existing.schema -eq $script:DshTeamInstallSchema -and
-                $existing.toolkitId -eq $ToolkitId -and
-                $existing.installId -and ([string]$existing.installId).Trim()) {
+            # safe accessor：缺字段只会让这份 manifest 被判为不可用并按 malformed 重新生成，
+            # 而不是依赖严格模式抛异常来“碰巧”走到同一个分支。
+            $existingSchema = Get-CaseInsensitiveValue -Map $existing -Name 'schema'
+            $existingToolkit = Get-CaseInsensitiveValue -Map $existing -Name 'toolkitId'
+            $existingInstall = Get-CaseInsensitiveValue -Map $existing -Name 'installId'
+            if ($existingSchema -eq $script:DshTeamInstallSchema -and
+                $existingToolkit -eq $ToolkitId -and
+                $existingInstall -and ([string]$existingInstall).Trim()) {
                 return [pscustomobject]@{
-                    InstallId    = [string]$existing.installId
+                    InstallId    = [string]$existingInstall
                     ToolkitId    = $ToolkitId
                     ManifestPath = $ManifestPath
                     Created      = $false
@@ -356,23 +608,31 @@ function Test-DshTeamHomeMarker {
         [string]$ToolkitId = $script:DshTeamToolkitId
     )
     if ($null -eq $Marker) { return [pscustomobject]@{ Ok = $false; Reason = 'marker 缺失或不是对象' } }
+    # 标量/数组 JSON 也会被 ConvertFrom-Json 接受；它们不是 marker 对象。
+    if ($Marker -is [string] -or $Marker -is [ValueType] -or $Marker -is [System.Array]) {
+        return [pscustomobject]@{ Ok = $false; Reason = 'marker 缺失或不是对象' }
+    }
+    # 字段读取一律走 safe accessor：缺字段时返回 $null 并给出可读 Reason，而不是让
+    # Set-StrictMode -Version Latest 抛 PropertyNotFoundException 覆盖真正的诊断信息。
+    $values = @{}
     foreach ($field in $script:DshTeamMarkerRequiredFields) {
-        $value = $Marker.$field
-        if (-not $value -or -not ([string]$value).Trim()) {
+        $value = Get-CaseInsensitiveValue -Map $Marker -Name $field
+        if ($null -eq $value -or -not ([string]$value).Trim()) {
             return [pscustomobject]@{ Ok = $false; Reason = "marker 缺少必需字段 $field" }
         }
+        $values[$field] = ([string]$value).Trim()
     }
-    if ($Marker.schema -ne $script:DshTeamMarkerSchema) {
-        return [pscustomobject]@{ Ok = $false; Reason = "marker schema $($Marker.schema) 不受支持" }
+    if ($values['schema'] -ne $script:DshTeamMarkerSchema) {
+        return [pscustomobject]@{ Ok = $false; Reason = "marker schema $($values['schema']) 不受支持" }
     }
-    if ($Marker.toolkitId -ne $ToolkitId) {
-        return [pscustomobject]@{ Ok = $false; Reason = "marker 属于 toolkit $($Marker.toolkitId)" }
+    if ($values['toolkitId'] -ne $ToolkitId) {
+        return [pscustomobject]@{ Ok = $false; Reason = "marker 属于 toolkit $($values['toolkitId'])" }
     }
-    if ($Marker.purpose -ne $script:DshTeamMarkerPurpose) {
-        return [pscustomobject]@{ Ok = $false; Reason = "marker purpose $($Marker.purpose) 不正确" }
+    if ($values['purpose'] -ne $script:DshTeamMarkerPurpose) {
+        return [pscustomobject]@{ Ok = $false; Reason = "marker purpose $($values['purpose']) 不正确" }
     }
-    if ($InstallId -and $Marker.installId -ne $InstallId) {
-        return [pscustomobject]@{ Ok = $false; Reason = "marker 属于 install $($Marker.installId)，不是本次安装的 $InstallId" }
+    if ($InstallId -and $values['installId'] -ne $InstallId) {
+        return [pscustomobject]@{ Ok = $false; Reason = "marker 属于 install $($values['installId'])，不是本次安装的 $InstallId" }
     }
     return [pscustomobject]@{ Ok = $true; Reason = 'marker 完整匹配' }
 }
@@ -429,8 +689,13 @@ function Get-DshTeamHomeState {
     $marker = Read-DshTeamHomeMarker -TeamDshHome $target
     $validation = Test-DshTeamHomeMarker -Marker $marker -InstallId $InstallId -ToolkitId $ToolkitId
     if ($validation.Ok) { return [pscustomobject]@{ State = 'owned'; Path = $target; Reason = $validation.Reason } }
-    if ($marker -and $marker.schema -eq $script:DshTeamMarkerSchema -and $marker.toolkitId -eq $ToolkitId -and
-        $InstallId -and $marker.installId -ne $InstallId) {
+    # marker 字段读取同样走 safe accessor：缺 schema/installId 的 marker 只会得到
+    # unowned/foreign-install 判定，不会因严格模式抛异常而丢掉可读原因。
+    $markerSchema = Get-CaseInsensitiveValue -Map $marker -Name 'schema'
+    $markerToolkit = Get-CaseInsensitiveValue -Map $marker -Name 'toolkitId'
+    $markerInstall = Get-CaseInsensitiveValue -Map $marker -Name 'installId'
+    if ($null -ne $marker -and $markerSchema -eq $script:DshTeamMarkerSchema -and $markerToolkit -eq $ToolkitId -and
+        $InstallId -and $markerInstall -and $markerInstall -ne $InstallId) {
         return [pscustomobject]@{ State = 'foreign-install'; Path = $target; Reason = $validation.Reason }
     }
     if (Test-DshLooksLikeUserDshHome -Path $target) {
@@ -742,19 +1007,70 @@ function Test-DshDeniedEnvName {
 
 function Get-DshChildEnvAllowlist { return @($script:DshChildEnvAllowlist) }
 
+# 属性读取在 Set-StrictMode -Version Latest 下必须安全：ConvertFrom-Json 得到 PSCustomObject
+# （没有 .Keys），而缺字段时 $obj.missing 会直接抛 PropertyNotFoundException。这个 helper 只做
+# “存在即返回、不存在返回 $null”，让调用方显式判定必需字段，而不是依赖严格模式抛异常。
+# IDictionary（[ordered]@{}/hashtable）与 PSCustomObject 都支持。
 function Get-CaseInsensitiveValue {
     param(
-        [Parameter(Mandatory)]$Map,
+        [Parameter(Mandatory)][AllowNull()]$Map,
         [Parameter(Mandatory)][string]$Name
     )
-    foreach ($key in @($Map.Keys)) {
-        if ($key -ieq $Name) { return $Map[$key] }
+    if ($null -eq $Map) { return $null }
+    if ($Map -is [System.Collections.IDictionary]) {
+        foreach ($key in @($Map.Keys)) {
+            if ([string]$key -ieq $Name) { return $Map[$key] }
+        }
+        return $null
+    }
+    foreach ($property in @($Map.PSObject.Properties)) {
+        if ($property.Name -ieq $Name) { return $property.Value }
+    }
+    return $null
+}
+
+# 允许“按系统环境补齐”的变量名。当父进程环境缺失这些名字（最小化启动的宿主、测试探针）
+# 时，从 Machine/User 作用域或系统 API 取值补齐，绝不因此整体继承父进程环境。
+$script:DshChildEnvSystemFallbackNames = @('SYSTEMROOT', 'SYSTEMDRIVE', 'WINDIR', 'COMSPEC', 'PATH', 'PATHEXT', 'TEMP', 'TMP')
+
+function Get-DshSystemEnvFallback {
+    param([Parameter(Mandatory)][string]$Name)
+    foreach ($scope in @('Machine', 'User')) {
+        $value = $null
+        try { $value = [System.Environment]::GetEnvironmentVariable($Name, $scope) } catch { $value = $null }
+        if ($value -and ([string]$value).Trim()) { return [string]$value }
+    }
+    $upper = $Name.ToUpperInvariant()
+    if ($upper -eq 'TEMP' -or $upper -eq 'TMP') {
+        try {
+            $temp = [System.IO.Path]::GetTempPath()
+            if ($temp) { return $temp.TrimEnd('\', '/') }
+        }
+        catch { }
+        return $null
+    }
+    if ($upper -eq 'SYSTEMROOT' -or $upper -eq 'WINDIR') {
+        try {
+            $windows = [System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::Windows)
+            if ($windows) { return $windows }
+        }
+        catch { }
+        return $null
+    }
+    if ($upper -eq 'SYSTEMDRIVE') {
+        try {
+            $windows = [System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::Windows)
+            if ($windows -and $windows.Length -ge 2) { return $windows.Substring(0, 2) }
+        }
+        catch { }
+        return $null
     }
     return $null
 }
 
 # Minimal, explicitly constructed child environment: allowlist first, then the confirmed DSH
-# runtime fields. A secret-bearing name in `-Explicit` is refused loudly.
+# runtime fields, then an allowlisted system-variable fallback. A secret-bearing name in
+# `-Explicit` is refused loudly.
 function Get-DshNarrowedChildEnv {
     param([hashtable]$Explicit = @{})
     $source = [System.Environment]::GetEnvironmentVariables()
@@ -764,6 +1080,15 @@ function Get-DshNarrowedChildEnv {
         $value = Get-CaseInsensitiveValue -Map $source -Name $key
         if ($null -eq $value) { continue }
         $narrowed[$key] = [string]$value
+    }
+    # 补齐缺失的允许系统变量：真实 Windows 启动需要 SystemRoot/TEMP/PATH 等；只对 allowlist
+    # 内的名字补齐，既避免“继承所有变量”，也避免子进程因缺系统变量而失败。
+    foreach ($key in $script:DshChildEnvSystemFallbackNames) {
+        if ($narrowed.ContainsKey($key)) { continue }
+        if (Test-DshDeniedEnvName -Name $key) { continue }
+        $fallback = Get-DshSystemEnvFallback -Name $key
+        if ($null -eq $fallback) { continue }
+        $narrowed[$key] = [string]$fallback
     }
     foreach ($key in @($Explicit.Keys)) {
         if (Test-DshDeniedEnvName -Name $key) {
@@ -841,6 +1166,48 @@ function Start-DshNarrowedProcess {
         ExitCode = $(if ($finished) { $process.ExitCode } else { $null })
         TimedOut = (-not $finished)
     }
+}
+
+# ---------------------------------------------------------------------------
+# Diagnosable-but-safe failure reporting
+# ---------------------------------------------------------------------------
+#
+# 失败必须可诊断，但 DSH 子进程的原始 stdout/stderr 是不受控通道，可能带未脱敏的 provider
+# 凭据。这里只把已识别的失败签名映射成稳定分类，配合 exit code 输出；绝不回显原始文本。
+
+$script:DshProcessFailureSignatures = @(
+    @{ Class = 'credentials'; Pattern = 'credentials-local:' },
+    @{ Class = 'settings'; Pattern = 'settings-file:' },
+    @{ Class = 'permission'; Pattern = 'EPERM' },
+    @{ Class = 'permission'; Pattern = 'EACCES' },
+    @{ Class = 'module-missing'; Pattern = 'Cannot find module' },
+    @{ Class = 'module-missing'; Pattern = 'ERR_MODULE_NOT_FOUND' },
+    @{ Class = 'network'; Pattern = 'ENOTFOUND' },
+    @{ Class = 'network'; Pattern = 'ETIMEDOUT' },
+    @{ Class = 'network'; Pattern = 'ECONNREFUSED' },
+    @{ Class = 'network'; Pattern = 'ECONNRESET' },
+    @{ Class = 'provider-config'; Pattern = 'is not configured' },
+    @{ Class = 'quota'; Pattern = 'Insufficient Balance' }
+)
+
+function Get-DshProcessFailureClass {
+    param([string]$Stdout, [string]$Stderr)
+    $text = [string]$Stdout + "`n" + [string]$Stderr
+    $classes = New-Object System.Collections.Generic.List[string]
+    foreach ($signature in $script:DshProcessFailureSignatures) {
+        if ($text.IndexOf([string]$signature.Pattern, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            if (-not $classes.Contains([string]$signature.Class)) { $classes.Add([string]$signature.Class) }
+        }
+    }
+    if ($classes.Count -eq 0) { return 'unclassified' }
+    return ($classes -join '+')
+}
+
+# The DSH entry point bundled next to a skill root. The standalone sync CLI may run without an
+# explicit -DshBinPath (the Monitor's one-click sync), so it derives the locked runtime here.
+function Get-DshBundledDshBinPath {
+    param([Parameter(Mandatory)][string]$SkillRoot)
+    return (Join-Path $SkillRoot 'node_modules\@deepseek-ai\dsh\lib\bin.js')
 }
 
 # ---------------------------------------------------------------------------

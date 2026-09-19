@@ -41,11 +41,11 @@ Test-Case -Name 'windows: both thin EXEs declare their version and pin the langu
   $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
   Assert-Equal 0 ([int]$report.exitCode) 'the recorded compiler exit code must be 0'
   Assert-Equal '5' ([string]$report.langVersion) 'the shell must be built as C# 5'
-  Assert-Equal '1.0.0.0' ([string]$report.fileVersion) 'the EXE version must be aligned with the release'
+  Assert-Equal '1.1.0.0' ([string]$report.fileVersion) 'the EXE version must be aligned with the release'
   Assert-True ([bool]$report.deterministic -or $true) 'deterministic builds are used when the compiler supports them'
 
   $version = (Get-Item -LiteralPath $exePath).VersionInfo
-  Assert-Equal '1.0.0.0' ([string]$version.FileVersion) 'the built EXE must carry the release file version'
+  Assert-Equal '1.1.0.0' ([string]$version.FileVersion) 'the built EXE must carry the release file version'
   Assert-Match ([string]$version.ProductName) 'Codex x DSH Team Toolkit' 'the EXE must identify the product'
   $size = (Get-Item -LiteralPath $exePath).Length
   Assert-True ($size -lt 204800) ('the EXE must stay thin (actual ' + $size + ' bytes)')
@@ -58,9 +58,9 @@ Test-Case -Name 'windows: both thin EXEs declare their version and pin the langu
   Assert-Equal 'codex-dsh-team-toolkit/installer-build/v1' ([string]$installerReport.schema) 'the installer report must declare its own schema'
   Assert-Equal 0 ([int]$installerReport.exitCode) 'the installer compiler exit code must be 0'
   Assert-Equal '5' ([string]$installerReport.langVersion) 'the installer shell must be built as C# 5'
-  Assert-Equal '1.0.0.0' ([string]$installerReport.fileVersion) 'the installer EXE version must be aligned with the release'
+  Assert-Equal '1.1.0.0' ([string]$installerReport.fileVersion) 'the installer EXE version must be aligned with the release'
   $installerVersion = (Get-Item -LiteralPath $installerExe).VersionInfo
-  Assert-Equal '1.0.0.0' ([string]$installerVersion.FileVersion) 'the installer EXE must carry the release file version'
+  Assert-Equal '1.1.0.0' ([string]$installerVersion.FileVersion) 'the installer EXE must carry the release file version'
   Assert-Match ([string]$installerVersion.ProductName) 'Codex x DSH Team Toolkit' 'the installer EXE must identify the product'
   Assert-Match ([string]$installerVersion.FileDescription) 'Installer' 'the installer EXE must describe itself as the installer'
   $installerSize = (Get-Item -LiteralPath $installerExe).Length

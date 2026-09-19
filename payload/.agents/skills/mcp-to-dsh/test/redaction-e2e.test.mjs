@@ -230,11 +230,15 @@ test("fake secret 不进入 child env、instruction、run manifest、HTTP 投影
     assert.equal(Object.hasOwn(call.env, key), false, `${key} 不得进入 child env`);
   }
   assert.equal(Object.keys(call.env).some((key) => /TOKEN|KEY|SECRET|PASSW|COOKIE|AUTHORIZATION/i.test(key)), false);
-  // child env 必须精确等于「allowlist ∩ 当前进程环境」+ 两个确认过的 DSH 字段，多一个都不行。
+  // child env 必须精确等于「allowlist ∩ 当前进程环境」+ 三个确认过的非 secret 运行字段
+  // （两个 DSH 运行时字段 + 显式路由的 ACP profile），多一个都不行。
   const expectedChildEnvKeys = [
     ...CHILD_ENV_ALLOWLIST.filter((key) => process.env[key] !== undefined),
     "DSH_HOME",
     "DSH_PERMISSION_MODE",
+    // WP-135 显式路由的 ACP profile：monitor 必须把同一个 profile 交给 bridge 子进程，
+    // 否则 Task 可能按 profile A 规划、DSH 却跑 profile B。它由 server 显式赋值（非继承）。
+    "CODEX_DSH_ACP_PROFILE",
   ].sort();
   assert.deepEqual(Object.keys(call.env).sort(), expectedChildEnvKeys, "child env 必须等于显式允许集");
   assert.equal(call.env.DSH_HOME, join(root, "team-home"));

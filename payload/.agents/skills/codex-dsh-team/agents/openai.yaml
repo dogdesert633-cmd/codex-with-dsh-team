@@ -1,6 +1,0 @@
-interface:
-  display_name: "Codex × DSH Team"
-  short_description: "长寿 DSH 团队 + Task DAG；DSH child 默认 Full Access 执行权限"
-  default_prompt: "使用 $codex-dsh-team 组织此项目；DSH child 使用 Team 规定的 Full Access execution permission，并继续严格遵守角色合同与 Work Package allowlist。"
-policy:
-  allow_implicit_invocation: true

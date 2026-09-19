@@ -20,15 +20,15 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Forms;
 
-// The thin shell is version-aligned with the release it ships in (v1.0.0). No SDK or extra
+// The thin shell is version-aligned with the release it ships in (v1.1.0). No SDK or extra
 // dependency is needed for this: version metadata is compiled straight into the EXE.
 [assembly: AssemblyTitle("Codex x DSH Team Toolkit Uninstaller")]
 [assembly: AssemblyDescription("Thin uninstaller shell: locates the project, shows the plan, calls the shared PowerShell engine.")]
 [assembly: AssemblyProduct("Codex x DSH Team Toolkit")]
 [assembly: AssemblyCompany("Codex x DSH Team Toolkit contributors")]
 [assembly: AssemblyCopyright("MIT licensed")]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
+[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyFileVersion("1.1.0.0")]
 [assembly: ComVisible(false)]
 
 internal static class Program

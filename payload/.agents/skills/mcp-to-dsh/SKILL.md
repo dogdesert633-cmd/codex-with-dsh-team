@@ -7,7 +7,10 @@ description: DSH child-agent transport/monitor。把 Codex logical child agent �
 
 当前传输使用 DSH ACP stdio + 仅监听 `127.0.0.1` 的 HTTP/SSE Monitor。
 
-在 `$codex-dsh-team` 模式下，本技能是 **child-agent adapter**，不是角色生命周期的权威来源。
+本技能是**独立的传输与 Monitor 层**，也是一份 **child-agent adapter**：它把调用方的
+spawn / follow_up / wait / terminate / replace 忠实映射到真实 DSH session，不规定团队必须
+有哪些角色，也不规定实现与正式验证必须由谁完成。生命周期权威是**调用它的 Codex**，不是
+任何特定 Skill；本技能不要求先加载其他 Skill，其他 Skill 也不要求先加载本技能。
 
 ## 生命周期权威
 
@@ -42,12 +45,15 @@ new run -> new evidence unit, not automatically new session
 
 ## 使用边界
 
-- 只有用户已授权 DSH 委派/团队/可视化时才启动 DSH。
-- Codex 可以拆任务、写合同、路由、管理 Monitor 和 Final Gate。
-- target code / test / validation helper / formal review 均由 DSH。
-- 人类可读 Progress/Run Report 优先由 DSH Reporter。
+- 只有用户已授权 DSH 委派或 DSH 可视化时才启动 DSH。
+- Codex 决定拆任务、写合同、路由、管理 Monitor 与最终验收。
+- **本传输不规定角色分工**：哪些工作交给 DSH、哪些留给 Codex（例如正式验证、视觉与长等待）由
+  调用方结合 DSH 边界规则决定，不在本技能里预设"某类工作一律由 DSH 做"。
+- 人类可读 Progress/Run Report 由调用方指定的 reporter 承担；本传输只负责记录与投影。
 - 机器 evidence 由 Monitor/Git/确定性命令自动生成。
-- DSH 失败时不由 Codex 接管代码。
+- **失败时本传输只返回错误与部分证据**（退出码、stderr、session/run 标识、已产生的公开事件），
+  不自行切换后端、不自行改派、不接管目标代码修改；后续重试、改派或换执行者由调用方决定
+  （包括调用方合法使用 Codex child 作为 fallback）。
 - 禁止 hash/checksum/digest 验证、校验文件与 hash-based 配置同步；使用 Git diff、直接内容比较、测试和运行证据。
 - 不读取/打印 credentials。
 - 页面只展示 ACP 主动公开事件，不声称隐藏思维链。
@@ -55,7 +61,7 @@ new run -> new evidence unit, not automatically new session
 ## 开始前
 
 1. 读取项目 `AGENTS.md`。
-2. 读取上层 `$codex-dsh-team` 生命周期规则（若处于团队模式）。
+2. 生命周期与角色分工由**调用本传输的 Codex** 决定；本传输只映射，不规定团队必须有哪些角色。
 3. 首次真实路由时读取 [references/operations.md](references/operations.md)。
 4. 确认 Node/npm、Git workspace 和 DSH home。
 5. cold start/preflight 与 measured run 分开。

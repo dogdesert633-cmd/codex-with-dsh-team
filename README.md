@@ -2,11 +2,11 @@
 
 **English** · [简体中文](README.zh-CN.md) · Windows desktop app
 
-## Give Codex a small team to help finish your project.
+## Codex leads. DSH shares the workload.
 
-Writing code, investigating bugs and reviewing changes take time and Codex usage. This toolkit lets Codex coordinate and validate the work, while DeepSeek Harness (DSH) delegates suitable tasks to external models you configure.
+**Save your Codex allowance for planning, coordination and final review.** Hand suitable coding, debugging and code review tasks to DeepSeek Harness (DSH). External models you choose take on that work, helping reduce Codex usage and keep your project moving.
 
-Choose your models, connect a project and follow its progress in the desktop console. You can also use the general team Skill on its own to organize roles within Codex.
+Codex breaks down tasks, leads the team and checks the results; DSH carries out its assigned work. Choose models that fit your budget, and use the desktop console to connect projects, synchronize settings and follow progress. An independent multi-role team Skill also works without DSH.
 
 **[Download Windows v1.3.2](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/download/v1.3.2/codex-dsh-desktop-v1.3.2-windows-x64.zip)** · [Release page](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/tag/v1.3.2) · [Installation guide](docs/INSTALLATION.md)
 
@@ -19,7 +19,7 @@ Choose your models, connect a project and follow its progress in the desktop con
 ## What you can do
 
 - **Divide work into clear roles.** Codex coordinates exploration, implementation and review, then performs final acceptance.
-- **Bring your own models.** Use your DSH providers and credentials, and select the model for subsequent tasks from the desktop app.
+- **Use external models to conserve Codex allowance.** Delegate suitable coding and review work to DSH; choose your own provider, model and budget.
 - **Manage projects in one window.** Check installation status, install dependencies and start or stop Monitor. Each project has one team; no manual conversation linking is needed.
 - **Follow the work.** View project and session summaries on the desktop, and detailed tasks, events and logs in the browser Monitor.
 

@@ -3,7 +3,16 @@
 All notable changes to the Codex × DSH Team Toolkit are recorded here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.2.1] — 2026-09-19 — **Pre-release**
+
+- 新增 PyQt6 桌面控制台：检测本机 DSH、选择配置目录、同步设置、管理项目与 Monitor。
+- 显示 Monitor 地址、任务状态和 DSH 会话，支持关联 Codex 对话及选择后续任务模型。
+- 提供进度、日志和操作结果；可以直接为新项目准备随附工具包与依赖。
+- 停止后台时清理对应子进程，并确认日志占用已释放；连接记录丢失时同样可以清理。
+- 退出桌面时可选择停止后台并退出、保留后台或取消。
+- 提供 Windows x64 完整 ZIP，无需安装 Python；原 v1.1.0 发布标签保留。
+
+随附工具包组件仍使用 v1.1.0 版本号，并包含以下此前未发布的修复：
 
 - 中文安装窗口：选择项目、查看进度与日志，安装完成后可直接打开项目。
 - 首次启动找不到 DSH 配置时提供目录选择窗口，并记住用户选择。

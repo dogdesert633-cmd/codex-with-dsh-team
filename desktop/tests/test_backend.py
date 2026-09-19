@@ -44,9 +44,11 @@ def source_at(path):
     first-provider:
       apiKey: do-not-expose-fixture-key
       baseURL: https://example.invalid/secret-path
-      models: [{id: first-model}]
+      models:
+        - id: first-model
     chosen-provider:
-      models: [{id: chosen-model}]
+      models:
+        - id: chosen-model
 agent-default-model:
   provider: chosen-provider
   model: chosen-model
@@ -152,6 +154,20 @@ class StoreTests(unittest.TestCase):
             store.set_source(bad)
         self.assertNotIn("DO-NOT-SHOW", str(caught.exception))
         self.assertEqual(before, (store.base / "user-settings-source.json").read_bytes())
+
+    def test_discovery_retains_broken_saved_source_and_rejects_runtime_copy(self):
+        store = backend.Store(self.root / "state")
+        saved = source_at(self.root / "saved")
+        store.set_source(saved)
+        (saved / "settings.yaml").unlink()
+        runtime = source_at(self.root / "runtime")
+        (runtime / ".codex-dsh-team-home.json").write_text("{}")
+        with patch.dict(os.environ, {"DSH_HOME": str(runtime), "DSH_USER_HOME": ""}), patch.object(Path, "home", return_value=self.root):
+            rows = store.candidates()
+        self.assertEqual(rows[0]["source"], "上次选择")
+        self.assertTrue(rows[0]["error"])
+        self.assertIn("运行副本", rows[1]["error"])
+        self.assertTrue(all(row["error"] for row in rows))
 
     def test_corrupt_project_records_are_preserved(self):
         store = backend.Store(self.root / "state")

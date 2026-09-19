@@ -6,7 +6,7 @@ import sys
 
 from PyQt6.QtCore import QTimer, QTranslator, QLibraryInfo
 from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QFont
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QInputDialog
 
 from backend import Store, DesktopError
 from version import VERSION
@@ -59,9 +59,23 @@ def smoke_window(output):
             assert window.grab().save(str(output / "desktop-overview.png"))
             window.show_page(1)
             window.display_source({"directory": str(output / "用户 DSH 配置"), "provider": "my-provider",
-                                   "model": "my-model", "credentialsPresent": True})
+                                   "model": "my-model", "credentialsPresent": True,
+                                   "providers": [{"id": "my-provider", "models": ["my-model"]}]})
             QApplication.processEvents()
             assert window.grab().save(str(output / "desktop-settings.png"))
+            window.snapshots[str(project.resolve())] = {"online": False}
+            window.project_changed()
+            QApplication.processEvents()
+            assert window.grab().save(str(output / "desktop-model-preview.png"))
+            dialog = QInputDialog(window)
+            dialog.setWindowTitle("选择 DSH 配置")
+            dialog.setLabelText("发现以下可用配置，请选择：")
+            dialog.setComboBoxItems(["my-provider / my-model · 用户默认目录 · 示例路径"])
+            dialog.setMinimumWidth(600)
+            dialog.show()
+            QApplication.processEvents()
+            assert dialog.grab().save(str(output / "desktop-dialog.png"))
+            dialog.close()
             (output / "smoke-result.json").write_text(json.dumps({"status": "PASS", "version": VERSION,
                 "qtWidgets": True, "renderedTasks": 2, "offline": True}, ensure_ascii=False), encoding="utf-8")
         except Exception as error:

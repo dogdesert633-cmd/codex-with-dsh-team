@@ -3,6 +3,15 @@
 All notable changes to the Codex × DSH Team Toolkit are recorded here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.2.2] — 2026-09-19 — **Pre-release**
+
+- 配置页面优先自动查找 DSH；唯一可用结果自动记住，多份配置由用户选择，手动浏览作为补充。
+- 未连接时显示本地模型预览、原因说明和启动入口；连接后可以应用模型偏好。
+- 桌面启动显式使用工具包专用运行目录，修复旧 `REMOTE_TO_DSH_HOME` 导致启动失败的问题。
+- 修复项目路径含方括号时无法启动 Monitor 的问题，后台日志按实际路径写入。
+- 弹窗、目录浏览器、下拉列表统一浅色主题，修复深色系统下黑底深字的问题。
+- 区分离线安装项目文件与首次下载运行依赖；已有依赖不重复安装，准备阶段显示对应的进度状态。
+
 ## [1.2.1] — 2026-09-19 — **Pre-release**
 
 - 新增 PyQt6 桌面控制台：检测本机 DSH、选择配置目录、同步设置、管理项目与 Monitor。

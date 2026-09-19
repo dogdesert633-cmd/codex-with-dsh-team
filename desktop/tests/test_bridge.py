@@ -140,7 +140,7 @@ if ($result.ExitCode) { throw ($result.Lines -join '\n') }
         (modules / "keep.txt").write_text("keep installed dependency")
         result = self.invoke("Install", package=current)
         self.assertEqual(result.returncode, 0, (result.stdout + result.stderr).decode("utf-8", "replace"))
-        self.assertEqual(backend.read_json(self.workspace / ".codex-dsh-team-toolkit/manifest.json")["version"], "1.3.1")
+        self.assertEqual(backend.read_json(self.workspace / ".codex-dsh-team-toolkit/manifest.json")["version"], "1.3.2")
         self.assertEqual((skill / "scripts/start_dsh_team.ps1").read_bytes(),
                          (current / "payload/.agents/skills/mcp-to-dsh/scripts/start_dsh_team.ps1").read_bytes())
         self.assertEqual(note.read_text(), "keep game")

@@ -68,6 +68,7 @@ def smoke_window(output):
             (output / "smoke-result.json").write_text(json.dumps({"status": "FAIL", "kind": type(error).__name__}), encoding="utf-8")
             QApplication.exit(1)
             return
+        window._allow_exit = True  # Synthetic monitor data must never invoke a real stop.
         window.close()
         QApplication.quit()
     QTimer.singleShot(500, finish)

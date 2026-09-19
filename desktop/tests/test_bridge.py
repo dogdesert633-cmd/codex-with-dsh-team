@@ -1,5 +1,7 @@
 """Optional Windows package integration. No real DSH/model task is dispatched."""
 import json
+import ctypes
+from ctypes import wintypes
 import os
 from pathlib import Path
 import shutil
@@ -59,7 +61,8 @@ exit 0
 
     @unittest.skipUnless(shutil.which("node"), "Node is required for the local process fixture")
     def test_discover_reuse_and_stop_only_owned_fixture_process(self):
-        script = self.root / "server.mjs"
+        script = self.workspace / ".agents/skills/mcp-to-dsh/src/server.mjs"
+        script.parent.mkdir(parents=True)
         # This process is a local HTTP fixture, not the actual DSH Monitor/agent.
         script.write_text("""import {createServer} from 'node:http';
 import {join} from 'node:path';
@@ -94,6 +97,80 @@ service.listen(0,'127.0.0.1',()=>console.log(JSON.stringify({port:service.addres
                 child.wait(timeout=8)
             child.stdout.close()
             child.stderr.close()
+
+    @unittest.skipUnless(shutil.which("node") and os.name == "nt", "Windows Node process/handle fixture")
+    def test_missing_record_stop_releases_log_held_by_child_and_preserves_other_project(self):
+        script = self.workspace / ".agents/skills/mcp-to-dsh/src/server.mjs"
+        script.parent.mkdir(parents=True)
+        script.write_text("""import {spawn} from 'node:child_process';
+const worker=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:['ignore','ignore',2]});
+console.log(JSON.stringify({childPid:worker.pid}));
+setInterval(()=>{},1000);
+""", encoding="utf-8")
+        log = self.workspace / "artifacts/dsh-monitor/server-stderr.log"
+        log.parent.mkdir(parents=True)
+        other = self.root / "other-project"
+        other.mkdir()
+        other_script = other / ".agents/skills/mcp-to-dsh/src/server.mjs"
+        other_script.parent.mkdir(parents=True)
+        other_script.write_text("setInterval(()=>{},1000);", encoding="utf-8")
+        sibling = subprocess.Popen([shutil.which("node"), str(other_script), "--workspace", str(other)],
+                                   creationflags=subprocess.CREATE_NO_WINDOW)
+        with log.open("wb") as stream:
+            parent = subprocess.Popen([shutil.which("node"), str(script), "--workspace", str(self.workspace)],
+                                      stdout=subprocess.PIPE, stderr=stream, creationflags=subprocess.CREATE_NO_WINDOW)
+        handle = None
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        try:
+            worker = json.loads(parent.stdout.readline())["childPid"]
+            handle = kernel.OpenProcess(0x100001, False, worker)
+            self.assertTrue(handle)
+            self.assertFalse((log.parent / "server.json").exists())
+            with self.assertRaises(PermissionError):
+                log.rename(log.with_suffix(".moved"))
+            self.assertIn(str(self.workspace), backend.discover_monitors())
+            state = backend.poll_projects([{"workspace": str(self.workspace)}])[str(self.workspace)]
+            self.assertFalse(state["online"])
+            self.assertTrue(state["canStop"])
+            with self.assertRaises(backend.DesktopError):
+                backend.existing_monitor(self.workspace)
+            result = self.invoke("Stop")
+            self.assertEqual(result.returncode, 0, result.stdout.decode("utf-8", "replace") + result.stderr.decode("utf-8", "replace"))
+            parent.wait(timeout=5)
+            self.assertEqual(kernel.WaitForSingleObject(handle, 5000), 0)
+            log.rename(log.with_suffix(".moved"))
+            self.assertIsNone(sibling.poll(), "Unrelated project's Monitor must stay running")
+        finally:
+            if parent.poll() is None:
+                parent.terminate()
+                parent.wait(timeout=5)
+            if handle:
+                if kernel.WaitForSingleObject(handle, 0) != 0:
+                    kernel.TerminateProcess(handle, 1)
+                    kernel.WaitForSingleObject(handle, 5000)
+                kernel.CloseHandle(handle)
+            parent.stdout.close()
+            sibling.terminate()
+            sibling.wait(timeout=5)
+
+    @unittest.skipUnless(shutil.which("node"), "Node fixture")
+    def test_unrelated_server_script_is_not_treated_as_monitor(self):
+        script = self.root / "server.mjs"
+        script.write_text("setInterval(()=>{},1000);", encoding="utf-8")
+        child = subprocess.Popen([shutil.which("node"), str(script), "--workspace", str(self.workspace)],
+                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        try:
+            self.assertNotIn(str(self.workspace), backend.discover_monitors())
+            self.assertEqual(self.invoke("Stop").returncode, 0)
+            self.assertIsNone(child.poll())
+        finally:
+            child.terminate()
+            child.wait(timeout=5)
 
 
 if __name__ == "__main__":

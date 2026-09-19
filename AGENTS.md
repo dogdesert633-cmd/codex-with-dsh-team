@@ -1,6 +1,6 @@
 # 桌面控制台开发
 
-此分支在独立 worktree 中实现 v1.2.0 PyQt6 桌面控制台。
+此分支在独立 worktree 中维护 v1.2.x PyQt6 桌面控制台。
 根据用户要求，使用 Codex 单代理开发，不委派 DSH 或其他代理。
 
 保留现有 payload、安装器、Monitor 的源代码，通过 desktop/ 中的适配器调用已有入口。

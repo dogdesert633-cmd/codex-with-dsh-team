@@ -5,7 +5,10 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Nothing beyond `1.1.0` yet.
+- 中文安装窗口：选择项目、查看进度与日志，安装完成后可直接打开项目。
+- 首次启动找不到 DSH 配置时提供目录选择窗口，并记住用户选择。
+- 默认模型跟随每位用户自己的最新配置，同步失败时阻止任务启动。
+- Git 改为可选，空白目录也能使用 DSH 路由，无需预先创建仓库或提交。
 
 ## [1.1.0] — 2026-09-19 — **Pre-release**
 

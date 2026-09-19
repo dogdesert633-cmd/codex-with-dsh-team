@@ -14,6 +14,8 @@ This review must be executed by a **newly spawned independent Reviewer child age
 ## Restrictions
 
 - Disposable read-only workspace.
+- Git is optional. A temporary copy of the relevant candidate files is sufficient; do not
+  require repository initialization or a commit before reviewing.
 - Do not modify any file.
 - Do not receive Coder/Tester private transcript.
 - Review only evidence/candidate available to an independent reviewer.

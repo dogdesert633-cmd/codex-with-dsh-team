@@ -51,8 +51,8 @@ Codex 负责协调与最终验收，需要时再接入 DeepSeek Harness（DSH）
    全部资产与说明见 [v1.1.0 Release 页](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/tag/v1.1.0)。
 2. **完整解压**：安装器需要整棵目录，不是只要一个 EXE。
 3. **运行解压目录里的 `CodexDshTeamToolkit.Install.exe`**；偏好脚本的话运行 `Install.cmd`。
-4. **在文件夹选择器里选择你已有的项目目录。**
-5. **核对文件清单并确认。** 在你确认之前不会写入任何内容。
+4. **点击“浏览”，选择已有的项目目录。** 浏览器首次从安装程序所在目录打开，空白项目也可以。
+5. **点击“检查安装”，检查通过后点击“开始安装”。** 窗口显示进度与日志，完成后会明确显示“安装完成”，并可打开项目文件夹。在你确认之前不会写入项目。
 
 安装完成后，项目里会有：
 
@@ -68,7 +68,7 @@ Codex 负责协调与最终验收，需要时再接入 DeepSeek Harness（DSH）
 第一次把任务交给 DSH 之前，你需要：
 
 - Windows 10 或 11；
-- **Node ≥ 22.19.0** 与 **Git**；
+- **Node ≥ 22.19.0**；Git 可选，普通文件夹不需要初始化仓库或创建提交；
 - 一份已经能正常工作的 DSH，并且已配置好 provider、model 与凭据。
 
 然后（路径请替换成你自己的项目）：
@@ -83,8 +83,10 @@ Set-Location '..\..\..'
 .\start_dsh_team.cmd
 ```
 
-启动器会在首次启动时用你已安装的 DSH 自动准备需要的配置，不需要你手写任何文件。若想指定具体
-配置，或启动不成功，请看 [docs/CONFIGURATION.md](docs/CONFIGURATION.md) 与
+启动器使用工具包依赖中的 DSH，读取**你自己的配置**。找不到配置时，会弹出文件夹选择窗口：
+选择包含 `settings.yaml` 的 DSH 配置目录即可，不需要选择文件或输入命令。程序会记住位置；
+启动时同步，派发任务前检查变化，默认跟随你最新的 `agent-default-model`。
+安装包不携带开发者的供应商设置或凭据。详细说明见 [docs/CONFIGURATION.md](docs/CONFIGURATION.md) 与
 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)。
 
 ## 需要知道的几件事
@@ -92,12 +94,12 @@ Set-Location '..\..\..'
 - **任务内容会离开本机。** 完成任务所需的提示、指令与文件内容会发送给你配置的 provider，使用你
   自己的账号并受其条款约束，可能产生费用。具体发送与不发送什么，见 [docs/SECURITY.md](docs/SECURITY.md)。
 - **DSH 可以执行命令并读写文件。** 运行权限默认为 Full Access，工具请求默认自动通过——这是为了让
-  它能真正干活，不是操作系统级沙箱。请用 Git 检查改动，并在事后复查 diff；细节见
+  它能真正干活，不是操作系统级沙箱。请复查任务产生的改动，有 Git 时可查看 diff；细节见
   [docs/SECURITY.md](docs/SECURITY.md)。
 - **运行产物不会自动被忽略。** 一次运行会在项目里写入 `artifacts/dsh-monitor/`、
   `artifacts/dsh-gui-runs/` 与 `.dsh/contracts/`。安装器不会修改你的 `.gitignore`；不想让它们进入
   版本管理，请在运行前自行把这些路径加进去。
-- **早期版本。** v1.1.0 是预发布版本，欢迎试用并反馈问题。真实的模型调用、GUI 安装流程，以及部分
+- **早期版本。** v1.1.0 是预发布版本，欢迎试用并反馈问题。真实的模型调用，以及部分
   权限场景还需要更多验证，详见[安装说明](docs/INSTALLATION.md)与[安全说明](docs/SECURITY.md)。
 
 ## 文档

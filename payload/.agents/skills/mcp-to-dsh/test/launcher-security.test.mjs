@@ -40,6 +40,57 @@ const SYNTHETIC_TEAM_HOME = [WINDOWS_DRIVE_C, 'Team'].join('\\');
 const PS_COMMAND_TIMEOUT_MS = 120000;
 const PS_SCRIPT_TIMEOUT_MS = 180000;
 
+test('user config lookup is bounded, remembers GUI selection and never falls back from an invalid explicit path', async (context) => {
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-home-picker-'));
+  context.after(() => fs.rm(base, { recursive: true, force: true }));
+  const first = path.join(base, 'first-user-home');
+  const second = path.join(base, 'second-user-home');
+  for (const dir of [first, second]) {
+    await fs.mkdir(dir);
+    await fs.writeFile(path.join(dir, 'settings.yaml'), 'agent-default-model: {}\n');
+  }
+  const quote = (text) => `'${text.replaceAll("'", "''")}'`;
+  for (const host of hosts) {
+    const script = `
+$ErrorActionPreference = 'Stop'
+. ${quote(commonScript)}
+$env:CODEX_DSH_TEAM_BASE_DIR = ${quote(path.join(base, host))}
+$env:DSH_USER_HOME = ${quote(first)}
+$env:DSH_HOME = ${quote(second)}
+if ((Resolve-DshUserHome) -ne ${quote(first)}) { throw 'Wrong environment priority' }
+if ((Resolve-DshUserHome -Requested ${quote(second)}) -ne ${quote(second)}) { throw 'Explicit path ignored' }
+$rejected = $false
+try { Resolve-DshUserHome -Requested ${quote(path.join(base, 'missing'))} | Out-Null } catch { $rejected = $true }
+if (-not $rejected) { throw 'Invalid explicit path silently fell back' }
+# Compile the real native folder picker on both supported hosts, without opening a dialog.
+$pickerFunction = Get-Command Show-DshUserHomePicker
+$code = $pickerFunction.ScriptBlock.Ast.Find({ param($ast) $ast -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $ast.Value.StartsWith('using System;') }, $true).Value
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -TypeDefinition $code
+function Show-DshUserHomePicker { param($InitialDirectory) return ${quote(second)} }
+$picked = Resolve-DshUserHome -SelectAgain -AllowPrompt
+if ($picked -ne ${quote(second)}) { throw 'Picker result ignored' }
+function Show-DshUserHomePicker { throw 'A remembered path should not prompt' }
+if ((Resolve-DshUserHome) -ne ${quote(second)}) { throw 'Picker result not remembered' }
+if ((Resolve-DshUserHome -Requested ${quote(first)}) -ne ${quote(first)}) { throw 'Explicit override must still win' }
+$env:DSH_USER_HOME = ''; $env:DSH_HOME = ''
+$saved = [IO.File]::ReadAllText((Join-Path (Get-DshTeamBaseDir) 'user-settings-source.json')) | ConvertFrom-Json
+if ($saved.userDshHome -ne ${quote(second)}) { throw 'Incorrect local preference' }
+[IO.File]::WriteAllText((Join-Path (Get-DshTeamBaseDir) 'user-settings-source.json'), 'invalid json')
+function Show-DshUserHomePicker { return ${quote(second)} }
+if ((Resolve-DshUserHome -AllowPrompt) -ne ${quote(second)}) { throw 'Invalid saved record must offer GUI recovery' }
+function Show-DshUserHomePicker { return $null }
+$cancelled = $false
+try { Resolve-DshUserHome -SelectAgain -AllowPrompt | Out-Null } catch { $cancelled = $true }
+if (-not $cancelled) { throw 'Cancel must stop configuration' }
+Write-Output 'lookup-picker-PASS'
+`;
+    const result = await runPowerShell(host, script);
+    assert.equal(result.code, 0, `${host}: ${result.stderr}`);
+    assert.match(result.stdout, /lookup-picker-PASS/);
+  }
+});
+
 async function runPowerShell(host, scriptText, { args = [], env } = {}) {
   const result = await spawnWithTimeout(
     host,

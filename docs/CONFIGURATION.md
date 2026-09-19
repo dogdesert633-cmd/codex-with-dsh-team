@@ -37,6 +37,7 @@ framework-dependent and run on the .NET Framework 4.x that ships with Windows 10
 | `-Yes` | off | explicit confirmation for unattended install **and** uninstall runs |
 | `-NonInteractive` | off | never prompt; missing input is an error |
 | `-Quiet` | off | suppress progress output (the plan is still produced) |
+| `-Progress` | off | emit live phase/count records for the GUI; does not change the transaction or final exit code |
 | `-OutputFile <path>` | off | also write the collected output to a file (used by the thin EXE) |
 | `-TeamDshHome <path>` | off | existing toolkit-owned Team Home to adopt (see below) |
 | `-RuntimeRootBase <path>` | `%LOCALAPPDATA%\CodexDshTeam` | base for the owned runtime root |
@@ -60,6 +61,33 @@ framework-dependent and run on the .NET Framework 4.x that ships with Windows 10
 | `6` | transaction failed; the project was rolled back | inspect the message, retry |
 | `7` | recovery/rollback was incomplete; transaction evidence was kept | inspect `.codex-dsh-team-toolkit/txn/<id>` |
 | `8` | install or uninstall needs explicit confirmation (interactive `YES`, or `-Yes` in automation) | re-run with `-Yes` |
+
+## Your DSH configuration
+
+The toolkit runs the DSH version pinned in its own dependencies. It does not search your disk
+for an executable or ship a developer's provider configuration.
+
+Both PowerShell launchers locate your **configuration directory** in this order:
+
+1. Explicit `-UserDshHome` (advanced/automation use).
+2. A directory previously chosen in the setup window.
+3. The current process's `DSH_USER_HOME`, then `DSH_HOME` environment variable.
+4. `.dsh` under the current user's home directory.
+
+These are exact locations, not recursive searches. An invalid selected source is never replaced
+silently by another one. Interactive startup opens a Windows folder picker if the source is
+missing or invalid. Choose the **directory containing `settings.yaml`**; the program checks the
+file itself. Cancelling stops startup. The path is saved outside the project at
+`%LOCALAPPDATA%\CodexDshTeam\user-settings-source.json` (under `CODEX_DSH_TEAM_BASE_DIR` when
+explicitly configured); only the path is stored, with no settings or credentials in that file.
+Advanced launchers can use `-SelectDshHome` to choose again or `-NonInteractive` to disable prompts.
+
+The source directory stays read-only. Startup syncs its configuration to the owned Team Home;
+before dispatch the Monitor compares settings and checks credential file metadata for changes.
+Credential contents are handled only by the existing local sync script. Sync failure prevents
+dispatch. The default comes from the user's current `agent-default-model`; missing/invalid
+defaults do not select the first provider. An explicit model override in the Monitor is retained
+until the user chooses to follow the DSH default again. Already running tasks keep their model.
 
 ## Network and data flow
 

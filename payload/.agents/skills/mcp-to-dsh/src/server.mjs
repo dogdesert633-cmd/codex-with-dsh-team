@@ -676,6 +676,8 @@ export function createMonitorServer(options = {}) {
   // One-click sync state: at most one child script runs at a time, and the last safe summary is
   // kept only for the settings projection (never any settings body or credential value).
   let settingsSyncInFlight = null;
+  let dispatchSyncRequired = false;
+  let userCredentialStamp = null;
   let lastSettingsSync = null;
   let modelPreference = {
     schemaVersion: MODEL_SETTINGS_SCHEMA_VERSION,
@@ -946,7 +948,7 @@ export function createMonitorServer(options = {}) {
       : null;
     let catalog;
     try {
-      catalog = await readDshModelCatalog(dshHome);
+      catalog = await readDshModelCatalog(dshUserHome ?? dshHome);
     } catch (error) {
       return {
         schemaVersion: MODEL_SETTINGS_SCHEMA_VERSION,
@@ -957,7 +959,7 @@ export function createMonitorServer(options = {}) {
         dshDefault: null,
         providers: [],
         updatedAt: modelPreference.updatedAt,
-        source: { kind: "dsh-settings", file: "settings.yaml" },
+        source: { kind: dshUserHome ? "user-dsh-settings" : "dsh-settings", file: "settings.yaml" },
         settingsSync,
         lastSync,
         error: modelPreferenceError ?? error.message,
@@ -981,7 +983,7 @@ export function createMonitorServer(options = {}) {
       dshDefault: catalog.defaultModel,
       providers: catalog.providers,
       updatedAt: modelPreference.updatedAt,
-      source: { kind: "dsh-settings", file: "settings.yaml" },
+      source: { kind: dshUserHome ? "user-dsh-settings" : "dsh-settings", file: "settings.yaml" },
       settingsSync,
       lastSync,
       error: selectionError,
@@ -993,7 +995,7 @@ export function createMonitorServer(options = {}) {
     if (modelPreferenceError) throw new Error(modelPreferenceError);
     if (modelPreference.selection) {
       return {
-        ...validateModelSelection(await readDshModelCatalog(dshHome), modelPreference.selection),
+        ...validateModelSelection(await readDshModelCatalog(dshUserHome ?? dshHome), modelPreference.selection),
         revision: modelPreference.revision,
         source: "monitor_override",
       };
@@ -1002,11 +1004,17 @@ export function createMonitorServer(options = {}) {
     // ACP profile defaults and resumed-session history can differ from settings.yaml, so merely
     // omitting the option would make the UI claim a model that the next Turn does not use.
     try {
-      const catalog = await readDshModelCatalog(dshHome);
+      const catalog = await readDshModelCatalog(dshUserHome ?? dshHome);
+      if (dshUserHome && !catalog.defaultModel) {
+        throw new Error("主 DSH settings.yaml 未声明有效的 agent-default-model；请配置默认供应商和模型。");
+      }
       return catalog.defaultModel
-        ? { ...catalog.defaultModel, revision: modelPreference.revision, source: "dsh_default" }
+        ? { ...validateModelSelection(catalog, catalog.defaultModel), revision: modelPreference.revision, source: "dsh_default" }
         : null;
-    } catch {
+    } catch (error) {
+      // A configured user Home is authoritative. Never hide its failure by letting an old
+      // Team profile or a provider's first model choose where a user's task is sent.
+      if (dshUserHome) throw new Error(`无法读取主 DSH 默认模型：${error.message}`);
       // Backward compatibility for installations without a readable model catalog: with no
       // explicit override the bridge retains its pre-feature behavior and lets DSH choose.
       return null;
@@ -1236,7 +1244,7 @@ export function createMonitorServer(options = {}) {
     }
     const selection = payload.selection === null
       ? null
-      : validateModelSelection(await readDshModelCatalog(dshHome), payload.selection);
+      : validateModelSelection(await readDshModelCatalog(dshUserHome ?? dshHome), payload.selection);
     const next = {
       schemaVersion: MODEL_SETTINGS_SCHEMA_VERSION,
       selection,
@@ -1391,12 +1399,23 @@ export function createMonitorServer(options = {}) {
     timer.unref?.();
   });
 
+  const credentialStamp = async () => {
+    if (!dshUserHome) return null;
+    try {
+      const info = await stat(resolve(dshUserHome, ".credentials.yaml"));
+      return `${info.mtimeMs}:${info.ctimeMs}:${info.size}`;
+    } catch (error) { if (error.code === "ENOENT") return null; throw error; }
+  };
+
   const executeSettingsSync = async () => {
+    dispatchSyncRequired = true;
+    const sourceCredentialStamp = await credentialStamp();
     const summary = await runSettingsSyncScript();
-    // B.6: the catalog is re-read from the (now updated) Team home and broadcast, so the next
-    // dispatch sees the new provider/model without restarting the monitor.
+    // Read the user's authoritative catalog and publish it without restarting the monitor.
     lastSettingsSync = summary;
     const projection = await modelSettingsProjection();
+    userCredentialStamp = sourceCredentialStamp;
+    dispatchSyncRequired = false;
     broadcast("model-settings", projection);
     return { ...summary, modelSettings: projection };
   };
@@ -1412,6 +1431,25 @@ export function createMonitorServer(options = {}) {
     });
     settingsSyncInFlight = operation;
     return operation;
+  };
+
+  const refreshSettingsForDispatch = async () => {
+    if (!dshUserHome || samePath(dshUserHome, dshHome)) return;
+    if (settingsSyncInFlight) await settingsSyncInFlight;
+    // Compare only settings, in memory. Credential handling stays inside the existing
+    // owned-home sync script. Ordinary dispatches do no extra copying when settings match.
+    const source = await readFile(resolve(dshUserHome, "settings.yaml"));
+    let target;
+    try { target = await readFile(resolve(dshHome, "settings.yaml")); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+    if (!dispatchSyncRequired && target?.equals(source) && await credentialStamp() === userCredentialStamp) return;
+    await (settingsSyncInFlight ?? syncDshSettings());
+    const [currentSource, currentTarget] = await Promise.all([
+      readFile(resolve(dshUserHome, "settings.yaml")), readFile(resolve(dshHome, "settings.yaml")),
+    ]);
+    if (!currentTarget.equals(currentSource)) {
+      throw new Error("主 DSH 配置尚未同步到 Team，或同步期间发生变化；未启动任务，请重试。");
+    }
   };
 
   let controlPlaneTail = Promise.resolve();
@@ -2540,6 +2578,7 @@ export function createMonitorServer(options = {}) {
     // Snapshot the monitor preference once per dispatch. Both spawn and follow_up pass this
     // exact selection to the bridge; an override that no longer exists in DSH settings fails
     // before a Run/Task reservation is created.
+    await refreshSettingsForDispatch();
     const requestedModel = await selectedModelForDispatch();
 
     const agentId = typeof payload.agentId === "string" ? payload.agentId.trim() : "";
@@ -3167,6 +3206,7 @@ export function createMonitorServer(options = {}) {
           port,
           workspace: defaultWorkspace,
           dshHome,
+          dshUserHome,
           // The ACP profile this monitor (and therefore every child it spawns) runs under, so a
           // launcher can decide whether an already-running monitor may be reused.
           dshProfile,

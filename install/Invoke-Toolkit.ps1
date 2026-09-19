@@ -49,6 +49,8 @@ param(
 
   [switch]$Quiet,
 
+  [switch]$Progress,
+
   [string]$TeamDshHome = '',
 
   [string]$RuntimeRootBase = '',
@@ -126,6 +128,7 @@ $script:TKExitCancelled = 8
 $script:TKOutput = New-Object System.Collections.ArrayList
 $script:TKCollectOutput = $false
 $script:TKQuietOutput = $false
+$script:TKEmitProgress = $false
 $script:TKNonInteractive = [bool]$NonInteractive
 $script:TKTestMode = [bool]$TestMode
 $script:TKTestFaultPoint = [string]$TestFault
@@ -284,6 +287,22 @@ function Get-ToolkitExceptionMessage {
 # ---------------------------------------------------------------------------
 # Output + log
 # ---------------------------------------------------------------------------
+
+function Write-ToolkitProgress {
+  param(
+    [ValidateSet('preflight', 'stage', 'apply', 'verify', 'commit', 'rollback')]
+    [string]$Phase,
+    [int]$Completed = 0,
+    [int]$Total = 1
+  )
+  if (-not $script:TKEmitProgress) { return }
+  # A separate, optional stream of machine counts. Never include paths or raw errors,
+  # never add values to a PowerShell function's return pipeline, and never affect IO.
+  try {
+    [Console]::WriteLine(('@@TK_PROGRESS@@|{0}|{1}|{2}' -f $Phase, $Completed, $Total))
+    [Console]::Out.Flush()
+  } catch { }
+}
 
 function Write-ToolkitLine {
   param(
@@ -3188,6 +3207,8 @@ function Show-ToolkitInstallPlan {
 function Invoke-ToolkitInstallAction {
   param([hashtable]$Options)
 
+  Write-ToolkitProgress -Phase preflight
+
   $enginePath = Get-ToolkitEngineSelfPath
   $targetArgument = [string]$Options['Target']
   if ([string]::IsNullOrEmpty($targetArgument)) {
@@ -3278,6 +3299,8 @@ function Invoke-ToolkitInstallAction {
       throw
     }
   }
+
+  Write-ToolkitProgress -Phase preflight -Completed 1
 
   if ([bool]$Options['PlanOnly']) {
     # A dry run performs the same read-only package preflight, shows the plan and writes nothing.
@@ -3410,6 +3433,9 @@ function Invoke-ToolkitInstallAction {
     Invoke-ToolkitFaultInjection -Point 'install.after-backup'
 
     # stage 2: same-directory temp staging
+    $progressTotal = @($plan.Operations | Where-Object { [string]$_.action -ne 'same' }).Count
+    $progressStaged = 0
+    Write-ToolkitProgress -Phase stage -Total $progressTotal
     foreach ($operation in @($plan.Operations)) {
       if ([string]$operation.action -eq 'same') { continue }
       $destinationDirectory = Split-Path -Parent ([string]$operation.destination)
@@ -3429,21 +3455,28 @@ function Invoke-ToolkitInstallAction {
       # had just created.
       [void](Write-ToolkitPristineFile -StateDirectory $stateDirectory -RelativePath ([string]$operation.path) -SourcePath ([string]$operation.sourceFull))
       $operation | Add-Member -NotePropertyName tempPath -NotePropertyValue $temp -Force
+      $progressStaged++
+      Write-ToolkitProgress -Phase stage -Completed $progressStaged -Total $progressTotal
     }
     Invoke-ToolkitFaultInjection -Point 'install.after-stage'
 
     # stage 3: atomic same-directory replace / move
     $replaced = 0
+    Write-ToolkitProgress -Phase apply -Total $progressTotal
     foreach ($operation in @($plan.Operations)) {
       if ([string]$operation.action -eq 'same') { continue }
       Move-ToolkitFileAtomic -Source ([string]$operation.tempPath) -Destination ([string]$operation.destination)
       $replaced++
+      Write-ToolkitProgress -Phase apply -Completed $replaced -Total $progressTotal
       Invoke-ToolkitFaultInjection -Point 'install.after-replace-first'
     }
     Invoke-ToolkitFaultInjection -Point 'install.after-replace'
     Write-ToolkitLine ('Applied ' + $replaced + ' file operations.') 'Detail'
 
     # stage 4: verify what is now on disk against the pristine baseline recorded in stage 2
+    $progressVerified = 0
+    $progressVerifyTotal = @($plan.NewFiles).Count
+    Write-ToolkitProgress -Phase verify -Total $progressVerifyTotal
     foreach ($record in @($plan.NewFiles)) {
       $relative = [string]$record.path
       $destination = Get-ToolkitFullPath -Root $targetRoot -RelativePath $relative
@@ -3453,6 +3486,8 @@ function Invoke-ToolkitInstallAction {
       if (-not (Test-ToolkitPristineMatches -StateDirectory $stateDirectory -RelativePath $relative -TargetPath $destination)) {
         Throw-ToolkitFailure -ExitCode $script:TKExitTransaction -Message 'Post-install verification failed: an installed file does not match the bytes this run recorded as pristine; rolling back.' -Detail ('path=' + (Get-ToolkitSafePath -Path $relative))
       }
+      $progressVerified++
+      Write-ToolkitProgress -Phase verify -Completed $progressVerified -Total $progressVerifyTotal
     }
     Invoke-ToolkitFaultInjection -Point 'install.after-verify'
 
@@ -3470,11 +3505,13 @@ function Invoke-ToolkitInstallAction {
     Invoke-ToolkitFaultInjection -Point 'install.before-manifest-commit'
 
     # stage 6: ownership manifest atomic commit (also refreshes location metadata after a move)
+    Write-ToolkitProgress -Phase commit
     $ownership = New-ToolkitOwnershipManifest -InstallId $installId -Version ([string]$releaseManifest.version) -TargetRoot $targetRoot -Files @($plan.NewFiles) -ToolkitVersion ([string]$releaseManifest.version)
     Write-ToolkitJsonAtomic -Object $ownership -Destination $ownershipManifestPath
     $transaction.Journal.state = 'committed'
     Save-ToolkitJournal -Transaction $transaction
     Invoke-ToolkitFaultInjection -Point 'install.after-manifest-commit'
+    Write-ToolkitProgress -Phase commit -Completed 1
 
     if ($null -ne $ownershipManifest) {
       Write-ToolkitLine 'Ownership is self-locating: the state directory plus its pristine copies identify the managed files, so no location digest is needed.'
@@ -3494,6 +3531,7 @@ function Invoke-ToolkitInstallAction {
     }
 
     if ($null -ne $transaction) {
+      Write-ToolkitProgress -Phase rollback
       $problems = @(Invoke-ToolkitRollback -Transaction $transaction -TargetRoot $targetRoot -ManifestPath $ownershipManifestPath)
       if ([bool]$transaction.Journal.runtimeCreated) {
         try {
@@ -4541,6 +4579,7 @@ function Invoke-ToolkitCommand {
   $script:TKOutput = New-Object System.Collections.ArrayList
   $script:TKCollectOutput = $true
   $script:TKQuietOutput = $true
+  $script:TKEmitProgress = [bool]$Options['Progress'] -and ([string]$Options['Action'] -eq 'Install')
   $script:TKNonInteractive = [bool]$Options['NonInteractive']
   $script:TKTestMode = [bool]$Options['TestMode']
   $script:TKTestFaultPoint = [string]$Options['TestFault']
@@ -4577,6 +4616,7 @@ function Invoke-ToolkitCommand {
     $script:TKLogEnabled = $false
     $script:TKCollectOutput = $false
     $script:TKQuietOutput = $false
+    $script:TKEmitProgress = $false
   }
   return (New-ToolkitJsonObject -Properties @{
       ExitCode             = $exitCode
@@ -4618,6 +4658,7 @@ if (-not $Library) {
     Yes              = [bool]$Yes
     NonInteractive   = [bool]$NonInteractive
     Quiet            = [bool]$Quiet
+    Progress         = [bool]$Progress
     TeamDshHome      = $TeamDshHome
     RuntimeRootBase  = $RuntimeRootBase
     InitializeRuntime = [bool]$InitializeRuntime

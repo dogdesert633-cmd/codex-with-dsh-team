@@ -153,12 +153,13 @@ function summarizeTool(update) {
   return Object.fromEntries(Object.entries(compact).filter(([, value]) => value !== undefined));
 }
 
-async function runGit(cwd, commandArgs) {
+async function runGit(cwd, commandArgs, executable = "git") {
   return new Promise((resolvePromise) => {
-    const git = spawn("git", commandArgs, {
+    const git = spawn(executable, commandArgs, {
       cwd,
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
+      timeout: 5000,
     });
     let stdout = "";
     let stderr = "";
@@ -171,15 +172,32 @@ async function runGit(cwd, commandArgs) {
   });
 }
 
-async function runGitEvidence(cwd) {
+// Git enriches a run when available; it is never a condition for delegating work.
+export async function runGitEvidence(cwd, executable = "git") {
+  const invoke = (args) => runGit(cwd, args, executable);
+  const probe = await invoke(["rev-parse", "--is-inside-work-tree"]);
+  if (probe.code !== 0 || probe.stdout.trim() !== "true") {
+    const absent = { code: null, stdout: "", stderr: "" };
+    return {
+      available: false,
+      reason: probe.code === -1 ? "git_unavailable" : "not_a_worktree",
+      hasHead: false,
+      status: absent, stat: absent, numstat: absent, patch: absent, untracked: absent,
+    };
+  }
+  const head = await invoke(["rev-parse", "--verify", "HEAD"]);
+  // An uncommitted repository still provides status/untracked evidence. Do not ask the
+  // user to create a commit just to make an optional HEAD diff possible.
+  const diffBase = head.code === 0 ? ["HEAD"] : ["--cached"];
   const [status, stat, numstat, patch, untracked] = await Promise.all([
-    runGit(cwd, ["status", "--short"]),
-    runGit(cwd, ["diff", "HEAD", "--stat"]),
-    runGit(cwd, ["diff", "HEAD", "--numstat"]),
-    runGit(cwd, ["diff", "HEAD", "--binary"]),
-    runGit(cwd, ["ls-files", "--others", "--exclude-standard"]),
+    invoke(["status", "--short"]),
+    invoke(["diff", ...diffBase, "--stat"]),
+    invoke(["diff", ...diffBase, "--numstat"]),
+    invoke(["diff", ...diffBase, "--binary"]),
+    invoke(["ls-files", "--others", "--exclude-standard"]),
   ]);
-  return { status, stat, numstat, patch, untracked };
+  return { available: status.code === 0, reason: status.code === 0 ? null : "git_error",
+    hasHead: head.code === 0, status, stat, numstat, patch, untracked };
 }
 
 async function main() {
@@ -537,6 +555,10 @@ async function main() {
       stop_reason: stopReason,
       dsh_process_exit: childExit,
       bridge_error: failure,
+      git_available: git.available,
+      git_unavailable_reason: git.reason,
+      git_before_available: gitBefore.available,
+      git_has_head: git.hasHead,
       git_before_status_short: gitBefore.status.stdout,
       git_before_untracked: gitBefore.untracked.stdout,
       git_before_diff_stat: gitBefore.stat.stdout,
@@ -547,9 +569,9 @@ async function main() {
       git_diff_numstat: git.numstat.stdout,
       git_diff_exit_code: git.patch.code,
       git_state_changed:
-        gitBefore.status.stdout !== git.status.stdout
+        gitBefore.available && git.available ? (gitBefore.status.stdout !== git.status.stdout
         || gitBefore.untracked.stdout !== git.untracked.stdout
-        || gitBefore.patch.stdout !== git.patch.stdout,
+        || gitBefore.patch.stdout !== git.patch.stdout) : null,
     };
     if (summaryPath) await writeFile(summaryPath, `${redactJson(summary, 2)}\n`, "utf8");
     rawLog?.end();
@@ -560,13 +582,15 @@ async function main() {
     transcriptStream?.end();
     writeConsole(`[bridge:exit] dsh=${jsonSafe(childExit)} session=${sessionId ?? "none"}\n`);
     const clean = git.status.code === 0 && git.status.stdout.trim() === "";
-    writeConsole(`[GIT:state] ${clean ? "clean" : "dirty"}\n`);
-    if (!clean) writeConsole(`${git.status.stdout || git.status.stderr}`);
+    writeConsole(`[GIT:state] ${!git.available ? "not_available (optional)" : clean ? "clean" : "dirty"}\n`);
+    if (git.available && !clean) writeConsole(`${git.status.stdout || git.status.stderr}`);
     if (git.stat.stdout.trim()) writeConsole(`[GIT:diff] ${git.stat.stdout}`);
   }
 }
 
-main().catch((error) => {
-  process.stderr.write(redactText(`[bridge:fatal] ${error.stack ?? error}\n`));
-  process.exitCode = 1;
-});
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    process.stderr.write(redactText(`[bridge:fatal] ${error.stack ?? error}\n`));
+    process.exitCode = 1;
+  });
+}

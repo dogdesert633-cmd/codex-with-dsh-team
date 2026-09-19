@@ -245,6 +245,84 @@ async function startMonitor(context, { workspace, spawnBridge, ...serverOptions 
   return { workspace: root, monitor, origin: `http://127.0.0.1:${address.port}` };
 }
 
+test("dispatch refreshes each user's settings, keeps explicit overrides and blocks failed sync", async (context) => {
+  const workspace = await mkdtemp(join(tmpdir(), "dsh-user-default-team-"));
+  const userHome = await mkdtemp(join(tmpdir(), "dsh-user-default-source-"));
+  const config = (provider) => `llm-pi-ai:
+  providers:
+    chen-lab:
+      models:
+        - id: first-model
+    ocg-ds:
+      models:
+        - id: deepseek-v4.1-flash
+agent-default-model:
+  provider: ${provider}
+  model: ${provider === "ocg-ds" ? "deepseek-v4.1-flash" : "first-model"}
+`;
+  await writeFile(join(workspace, "settings.yaml"), config("chen-lab"));
+  await writeFile(join(userHome, "settings.yaml"), config("ocg-ds"));
+  const bridge = createFakeBridge();
+  let syncCount = 0;
+  let failSync = false;
+  const spawnSettingsSync = () => {
+    const { child, call } = fakeSyncChild();
+    syncCount++;
+    queueMicrotask(async () => {
+      // Even a failure after the settings copy must not make the next dispatch skip recovery.
+      await writeFile(join(workspace, "settings.yaml"), await readFile(join(userHome, "settings.yaml")));
+      if (failSync) call.fail(); else call.succeed();
+    });
+    return child;
+  };
+  const started = await startMonitor(context, { workspace, dshUserHome: userHome, spawnBridge: bridge.spawnBridge, spawnSettingsSync });
+  context.after(async () => {
+    await started.monitor.close();
+    await rm(workspace, { recursive: true, force: true });
+    await rm(userHome, { recursive: true, force: true });
+  });
+  const initial = await (await send(started.origin, "GET", "/api/model-settings")).json();
+  assert.deepEqual(initial.effective, { provider: "ocg-ds", model: "deepseek-v4.1-flash" });
+  assert.equal(initial.source.kind, "user-dsh-settings");
+  let agent = 0;
+  async function launch(expectedProvider) {
+    const dispatched = await dispatchJson(started.origin, { agentId: `DEFAULT-${++agent}`, formalRole: "coder", lifecycleAction: "spawn" });
+    assert.equal(dispatched.status, 202, JSON.stringify(dispatched.body));
+    const call = bridge.calls.at(-1);
+    assert.equal(call.args[call.args.indexOf("--model-provider") + 1], expectedProvider);
+    await call.finish();
+    await waitForStatus(started.monitor, dispatched.body.id, ["completed"]);
+  }
+  await launch("ocg-ds");
+  assert.equal(syncCount, 1);
+  await launch("ocg-ds");
+  assert.equal(syncCount, 1, "unchanged settings do not start another sync");
+  await writeFile(join(userHome, "settings.yaml"), config("chen-lab"));
+  await launch("chen-lab");
+  assert.equal(syncCount, 2, "a changed user default applies on the same running monitor");
+  const override = await send(started.origin, "PATCH", "/api/model-settings", {
+    selection: { provider: "chen-lab", model: "first-model" }, expectedRevision: 0,
+  });
+  assert.equal(override.status, 200);
+  await writeFile(join(userHome, "settings.yaml"), config("ocg-ds"));
+  await launch("chen-lab");
+  await send(started.origin, "PATCH", "/api/model-settings", { selection: null, expectedRevision: 1 });
+  await writeFile(join(userHome, "settings.yaml"), config("chen-lab"));
+  failSync = true;
+  const before = bridge.calls.length;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const failed = await dispatchJson(started.origin, { agentId: `FAIL-${attempt}`, formalRole: "coder", lifecycleAction: "spawn" });
+    assert.notEqual(failed.status, 202);
+    assert.equal(bridge.calls.length, before, "sync failure must not route any task");
+  }
+  failSync = false;
+  await launch("chen-lab");
+  await writeFile(join(userHome, "settings.yaml"), "llm-pi-ai: {}\n");
+  const missing = await dispatchJson(started.origin, { agentId: "MISSING-DEFAULT", formalRole: "coder", lifecycleAction: "spawn" });
+  assert.notEqual(missing.status, 202);
+  assert.equal(bridge.calls.length, before + 1, "missing default cannot silently select a provider");
+});
+
 // --- lease / shutdown doubles -------------------------------------------------
 
 function spawnExitedPid() {
@@ -454,6 +532,8 @@ test("a custom --dsh-profile reaches health, the bridge child env and the config
   const fake = createFakeBridge();
   const workspace = await mkdtemp(join(tmpdir(), "dsh-profile-"));
   const userHome = await mkdtemp(join(tmpdir(), "dsh-profile-user-"));
+  await writeFile(join(userHome, "settings.yaml"), MODEL_SETTINGS_YAML);
+  await writeFile(join(workspace, "settings.yaml"), MODEL_SETTINGS_YAML);
   context.after(() => rm(workspace, { recursive: true, force: true }));
   context.after(() => rm(userHome, { recursive: true, force: true }));
   const started = await startMonitor(context, {
@@ -503,7 +583,7 @@ test("the one-click configuration sync runs with the same Team profile", async (
   assert.equal(args[args.indexOf("-Workspace") + 1], workspace);
 });
 
-test("an invalid dsh profile name is refused by the factory and by the CLI", async () => {
+test("an invalid dsh profile name is refused by the factory and by the CLI", async (context) => {
   const bad = ["../evil", "a b", "-lead", ".hidden", "node_modules", "NODE_MODULES", "x".repeat(65), "a/b"];
   for (const name of bad) {
     assert.throws(
@@ -513,7 +593,9 @@ test("an invalid dsh profile name is refused by the factory and by the CLI", asy
     );
   }
   // the documented default keeps every existing caller working
-  const monitor = createMonitorForTest({ workspace: process.cwd(), dshHome: process.cwd(), port: 0, token: TOKEN });
+  const isolated = await mkdtemp(join(tmpdir(), "dsh-profile-default-"));
+  context.after(() => rm(isolated, { recursive: true, force: true }));
+  const monitor = createMonitorForTest({ workspace: isolated, dshHome: isolated, port: 0, token: TOKEN });
   assert.equal(typeof monitor.start, "function");
   await monitor.close();
 
@@ -3326,6 +3408,7 @@ function syncSettingsRequest(origin, { token = true, origin: originHeader, cooki
 
 async function startSyncMonitor(context, { workspace, userHome, spawnSettingsSync, ...rest }) {
   await writeFile(join(workspace, "settings.yaml"), MODEL_SETTINGS_YAML, "utf8");
+  await writeFile(join(userHome, "settings.yaml"), MODEL_SETTINGS_YAML, "utf8");
   const started = await startMonitor(context, {
     workspace,
     spawnBridge: createFakeBridge().spawnBridge,
@@ -3432,17 +3515,13 @@ test("sync-settings refreshes and broadcasts model settings so the next dispatch
       // 真实同步脚本的效果就是把主 Home 的运行配置复制进 Team Home；这里用重写 settings.yaml
       // 来代表同一结果，以便证明刷新来自磁盘而不是缓存。
       await writeFile(join(workspace, "settings.yaml"), SYNCED_SETTINGS_YAML, "utf8");
+      await writeFile(join(userHome, "settings.yaml"), SYNCED_SETTINGS_YAML, "utf8");
       call.succeed({ ...SYNC_SUMMARY_FIXTURE, notes: [] });
     });
     return child;
   };
   await writeFile(join(workspace, "settings.yaml"), MODEL_SETTINGS_YAML, "utf8");
-  const started = await startMonitor(context, {
-    workspace,
-    spawnBridge: bridge.spawnBridge,
-    dshUserHome: userHome,
-    spawnSettingsSync,
-  });
+  const started = await startSyncMonitor(context, { workspace, userHome, spawnBridge: bridge.spawnBridge, spawnSettingsSync });
   context.after(async () => {
     await started.monitor.close().catch(() => {});
     await rm(workspace, { recursive: true, force: true });

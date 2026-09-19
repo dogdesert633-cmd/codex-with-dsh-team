@@ -63,7 +63,7 @@ new run -> new evidence unit, not automatically new session
 1. 读取项目 `AGENTS.md`。
 2. 生命周期与角色分工由**调用本传输的 Codex** 决定；本传输只映射，不规定团队必须有哪些角色。
 3. 首次真实路由时读取 [references/operations.md](references/operations.md)。
-4. 确认 Node/npm、Git workspace 和 DSH home。
+4. 确认 Node/npm、存在的项目目录和 DSH home。普通文件夹即可使用，Git 为可选辅助。
 5. cold start/preflight 与 measured run 分开。
 
 用户 DSH Home（含 `settings.yaml` 与 `.credentials.yaml`）是本机运行前置；同步入口只在本机复制，不将这些文件或内容打入交付包。`.dsh/contracts` 由 Coordinator 在目标项目根目录创建，dispatch 读取其 contract text；路由字段通过显式参数传入。
@@ -239,5 +239,9 @@ dispatch、launcher），也约束接收 dispatch 的 Agent。
 
 ## 完成条件
 
-只有真实 DSH session、正确 Agent/Session binding、明确合同、正确 workspace、验证和前后 evidence 同时存在，才可宣称 DSH attribution PASS。
+以真实 DSH session、正确 Agent/Session binding、正确 workspace、任务结果与实际验证判断调用和交付是否完成。
 
+Git 不是路由、实现或验收的前置条件。不要求用户执行 `git init`、创建初始提交或套用固定的 Git 工作流。
+已有 Git 仓库时可附带状态与差异；没有 Git、没有仓库或没有提交时，按实际情况标记对应记录不可用，
+继续通过工具输出、文件结果和测试验证任务，不把缺少 Git 记录判为 DSH 调用失败。
+独立审查需要隔离时，可复制本次相关文件到临时目录，无需为了审查建立 Git 仓库。

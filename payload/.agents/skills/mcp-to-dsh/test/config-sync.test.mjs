@@ -184,6 +184,33 @@ test('项目自有脚本不再包含任何 hash 校验逻辑', async () => {
   assert.match(syncText, /cordis\.patch\.yml/);
 });
 
+test('同步保留第二个供应商的默认值，模型按 id 识别且不要求 name 或额外属性', async (context) => {
+  const { base, user, team } = await createHomes();
+  context.after(() => fs.rm(base, { recursive: true, force: true }));
+  const settings = `llm-pi-ai:
+  providers:
+    chen-lab:
+      models:
+        - id: first-model
+    ocg-ds:
+      models:
+        - id: deepseek-v4.1-flash
+          name: A friendly label
+        - id: only-id-model
+agent-default-model:
+  provider: ocg-ds
+  model: only-id-model
+`;
+  await fs.writeFile(path.join(user, 'settings.yaml'), settings);
+  const result = await runSyncCli(['-UserDshHome', user, '-TeamDshHome', team, ...identityArgs]);
+  assert.equal(result.code, 0, result.stderr);
+  const summary = JSON.parse(result.stdout.trim().split(/\r?\n/).at(-1));
+  assert.equal(summary.provider, 'ocg-ds');
+  assert.equal(summary.model, 'only-id-model');
+  assert.equal(await fs.readFile(path.join(team, 'settings.yaml'), 'utf8'), settings);
+  assert.match(await fs.readFile(path.join(team, 'profiles', 'acp', 'cordis.patch.yml'), 'utf8'), /model: only-id-model/);
+});
+
 test('一键同步 CLI 只返回安全摘要，并把运行配置复制进 owned Team Home', async (context) => {
   const { base, user, team } = await createHomes();
   context.after(() => fs.rm(base, { recursive: true, force: true }));

@@ -11,6 +11,26 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnWithTimeout } from './support/spawn-guard.mjs';
+import { runGitEvidence } from '../src/cli.mjs';
+
+test('Git evidence is optional for ordinary folders, missing Git and an uncommitted repo', async (context) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-optional-git-'));
+  context.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.writeFile(path.join(root, 'game.txt'), 'snake demo\n');
+  const absent = await runGitEvidence(root, path.join(root, 'missing-git-executable'));
+  assert.equal(absent.available, false);
+  assert.equal(absent.reason, 'git_unavailable');
+  const ordinary = await runGitEvidence(root);
+  assert.equal(ordinary.available, false);
+  assert.equal(ordinary.reason, 'not_a_worktree');
+  const init = await spawnWithTimeout('git', ['init', root], { timeoutMs: 10000 });
+  assert.equal(init.code, 0);
+  const unborn = await runGitEvidence(root);
+  assert.equal(unborn.available, true);
+  assert.equal(unborn.hasHead, false);
+  assert.match(unborn.untracked.stdout, /game.txt/);
+  assert.equal(unborn.patch.code, 0);
+});
 
 const skillRoot = path.resolve(import.meta.dirname, '..');
 const payloadRoot = path.resolve(skillRoot, '..', '..', '..');

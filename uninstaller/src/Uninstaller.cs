@@ -23,15 +23,15 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Forms;
 
-// The thin shell is version-aligned with the release it ships in (v1.3.2). No SDK or extra
+// The thin shell is version-aligned with the release it ships in (v1.3.3). No SDK or extra
 // dependency is needed for this: version metadata is compiled straight into the EXE.
 [assembly: AssemblyTitle("Codex x DSH Team Toolkit Uninstaller")]
 [assembly: AssemblyDescription("Thin uninstaller shell: locates the project, shows the plan, calls the shared PowerShell engine.")]
 [assembly: AssemblyProduct("Codex x DSH Team Toolkit")]
 [assembly: AssemblyCompany("Codex x DSH Team Toolkit contributors")]
 [assembly: AssemblyCopyright("MIT licensed")]
-[assembly: AssemblyVersion("1.3.2.0")]
-[assembly: AssemblyFileVersion("1.3.2.0")]
+[assembly: AssemblyVersion("1.3.3.0")]
+[assembly: AssemblyFileVersion("1.3.3.0")]
 [assembly: ComVisible(false)]
 
 internal static class Program
@@ -510,7 +510,7 @@ internal sealed class UninstallerWindow : Form
 
         var header = new Panel { Dock = DockStyle.Fill };
         header.Controls.Add(new Label { Text = "卸载 Codex × DSH 工具包", Font = new Font(Font.FontFamily, 20F, FontStyle.Bold), AutoSize = true, Location = new Point(0, 3) });
-        header.Controls.Add(new Label { Text = "Codex × DSH Team Toolkit  /  v1.3.2    ·    author: desertdog", ForeColor = Color.FromArgb(100, 116, 139), AutoSize = true, Location = new Point(2, 48) });
+        header.Controls.Add(new Label { Text = "Codex × DSH Team Toolkit  /  v1.3.3    ·    author: desertdog", ForeColor = Color.FromArgb(100, 116, 139), AutoSize = true, Location = new Point(2, 48) });
         root.Controls.Add(header, 0, 0);
 
         var features = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };

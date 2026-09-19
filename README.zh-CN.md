@@ -8,13 +8,24 @@
 
 Codex 负责拆任务、带团队、把关结果；DSH 负责执行分配给它的工作。你可以选择价格更合适的模型，桌面控制台帮你完成项目连接、配置同步和进度查看。工具包还包含独立的通用多角色 Skill，不接入 DSH 也能使用。
 
-**[下载 Windows 版 v1.3.2](https://github.com/dogdesert633-cmd/codex-with-dsh-team/releases/download/v1.3.2/codex-dsh-desktop-v1.3.2-windows-x64.zip)** · [查看发布页](https://github.com/dogdesert633-cmd/codex-with-dsh-team/releases/tag/v1.3.2) · [安装说明](docs/INSTALLATION.md)
+**[下载 Windows 版 v1.3.3](https://github.com/dogdesert633-cmd/codex-with-dsh-team/releases/download/v1.3.3/codex-dsh-desktop-v1.3.3-windows-x64.zip)** · [查看发布页](https://github.com/dogdesert633-cmd/codex-with-dsh-team/releases/tag/v1.3.3) · [安装说明](docs/INSTALLATION.md)
 
 > **安装前请了解：每个项目会单独安装一份 DSH 及运行依赖，约 200 MB。** 首次准备可能需要联网。它不会覆盖你原本的 DSH；各项目分别安装，不共用这份依赖。安装记录、npm 缓存和任务数据会额外占用空间。
+
+## 团队正在做什么，一眼就能看到
+
+![Monitor 运行界面：4 个 Agent，3 个运行中，1 个任务已完成，右侧展示指令和回复](docs/assets/monitor-active.png)
+
+**4 个 Agent · 3 个运行中 · 1 个任务已完成。** 左侧切换成员，右侧查看任务指令、回复和运行时间。截图来自实际 Monitor 页面，任务、模型与会话均为演示数据。
+
+<details>
+<summary>查看桌面控制台：安装、配置与项目管理</summary>
 
 ![桌面控制台：按项目查看团队、任务和模型，右下角显示作者署名](docs/assets/desktop-overview.png)
 
 *实际程序界面，任务与模型为演示数据。*
+
+</details>
 
 ## 你可以用它做什么
 

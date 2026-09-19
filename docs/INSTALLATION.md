@@ -1,7 +1,7 @@
 # Installation
 
-> **v1.3.2.** Download the **complete desktop ZIP** — `codex-dsh-desktop-v1.3.2-windows-x64.zip` — from
-> [releases/tag/v1.3.2](https://github.com/dogdesert633-cmd/codex-with-dsh-team/releases/tag/v1.3.2),
+> **v1.3.3.** Download the **complete desktop ZIP** — `codex-dsh-desktop-v1.3.3-windows-x64.zip` — from
+> [releases/tag/v1.3.3](https://github.com/dogdesert633-cmd/codex-with-dsh-team/releases/tag/v1.3.3),
 > extract it completely and open `CodexDshDesktop.exe`. Add a project, install the toolkit and
 > dependencies using the installation button, then start Monitor. For the file-only installer,
 > open the bundled `toolkit` directory; the instructions below describe that separate option.
@@ -35,8 +35,8 @@ The installer engine needs no administrator rights, no network access and no pac
 
 One run installs all three Skills into an existing project:
 
-1. **Download the release ZIP.** Use the `codex-dsh-desktop-v1.3.2-windows-x64.zip` asset attached to the
-   [v1.3.2 release](https://github.com/dogdesert633-cmd/codex-with-dsh-team/releases/tag/v1.3.2)
+1. **Download the release ZIP.** Use the `codex-dsh-desktop-v1.3.3-windows-x64.zip` asset attached to the
+   [v1.3.3 release](https://github.com/dogdesert633-cmd/codex-with-dsh-team/releases/tag/v1.3.3)
    (or a `dist/` zip built by a maintainer).
 2. **Extract it completely and open the bundled `toolkit` directory.** The installer needs the whole package tree, not just the EXE.
 3. **Run `CodexDshTeamToolkit.Install.exe`** in the package root — the normal GUI entry — or
@@ -135,7 +135,7 @@ Runtime notes:
 - `npm ci` contacts the npm registry once to materialise the pinned tree. The installer engine, the
   maintainer tools and the tests are offline.
 - `node_modules/**` is never part of a release package, is never installed by the installer and is
-  retained when installed manually or by an older version without ownership records. Dependencies prepared through the v1.3.2 desktop are recorded with original-byte baselines in one compressed archive and are removed on uninstall if unchanged. User edits and additional files are preserved.
+  retained when installed manually or by an older version without ownership records. Dependencies prepared through the v1.3.3 desktop are recorded with original-byte baselines in one compressed archive and are removed on uninstall if unchanged. User edits and additional files are preserved.
 - Later runs reuse the running Monitor for this project instead of starting a second one;
   `sync_dsh_team_config.cmd` re-syncs provider/model/credentials from your DSH Home on demand. The
   install and the runtime share one Team Home marker (`.codex-dsh-team-home.json`,
@@ -271,8 +271,8 @@ the EXEs from an extracted package.
 ```powershell
 pwsh -File installer/Build-Installer.ps1                     # installer EXE (needs in-box csc.exe)
 pwsh -File uninstaller/Build-Uninstaller.ps1                 # thin EXE (needs in-box csc.exe)
-pwsh -File tools/Build-Release.ps1 -Version 1.3.2            # dist/ package + zip (no checksum artefact)
-pwsh -File tools/Verify-Release.ps1 -Package dist/codex-dsh-team-toolkit-v1.3.2.zip
+pwsh -File tools/Build-Release.ps1 -Version 1.3.3            # dist/ package + zip (no checksum artefact)
+pwsh -File tools/Verify-Release.ps1 -Package dist/codex-dsh-team-toolkit-v1.3.3.zip
 ```
 
 The build is offline and never pushes anywhere. Useful properties:
@@ -289,7 +289,7 @@ The build is offline and never pushes anywhere. Useful properties:
   explicitly — the use is printed in the build output and recorded in `dist/build-report.json`:
 
   ```powershell
-  pwsh -File tools/Build-Release.ps1 -Version 1.3.2 `
+  pwsh -File tools/Build-Release.ps1 -Version 1.3.3 `
     -ContentScanAllowlist '.agents/skills/mcp-to-dsh/test/redaction.test.mjs'
   ```
 

@@ -8,13 +8,24 @@
 
 Codex breaks down tasks, leads the team and checks the results; DSH carries out its assigned work. Choose models that fit your budget, and use the desktop console to connect projects, synchronize settings and follow progress. An independent multi-role team Skill also works without DSH.
 
-**[Download Windows v1.3.2](https://github.com/dogdesert633-cmd/codex-with-dsh-team/releases/download/v1.3.2/codex-dsh-desktop-v1.3.2-windows-x64.zip)** · [Release page](https://github.com/dogdesert633-cmd/codex-with-dsh-team/releases/tag/v1.3.2) · [Installation guide](docs/INSTALLATION.md)
+**[Download Windows v1.3.3](https://github.com/dogdesert633-cmd/codex-with-dsh-team/releases/download/v1.3.3/codex-dsh-desktop-v1.3.3-windows-x64.zip)** · [Release page](https://github.com/dogdesert633-cmd/codex-with-dsh-team/releases/tag/v1.3.3) · [Installation guide](docs/INSTALLATION.md)
 
 > **Each project gets its own DSH installation and runtime dependencies, approximately 200 MB.** Initial preparation may need internet access. Your existing DSH installation stays intact; dependencies are installed separately for each project. Installation records, npm caches and task data use additional space.
+
+## See your team at work
+
+![Monitor with four agents, three running and one completed task, alongside task instructions and replies](docs/assets/monitor-active.png)
+
+**4 agents · 3 running · 1 completed task.** Select a team member on the left to follow its instructions, replies and elapsed time on the right. Captured from the actual Monitor with demonstration tasks, models and sessions.
+
+<details>
+<summary>Desktop console: installation, settings and project management</summary>
 
 ![Desktop console showing project, team and model status, with author credit at the bottom right](docs/assets/desktop-overview.png)
 
 *Actual application interface with demonstration tasks and models. The desktop interface is currently in Simplified Chinese.*
+
+</details>
 
 ## What you can do
 

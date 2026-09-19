@@ -36,6 +36,7 @@
     "docs/SECURITY.md",
     "docs/TROUBLESHOOTING.md",
     "docs/assets/desktop-overview.png",
+    "docs/assets/monitor-active.png",
     "install/Invoke-Toolkit.ps1",
     "uninstaller/CodexDshTeamToolkit.Uninstall.exe",
     "uninstaller/Build-Uninstaller.ps1",

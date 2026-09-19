@@ -2,9 +2,9 @@
 
 把项目、模型和团队进度放在一个窗口里。Codex 负责协调和验收，DSH 使用你配置的外部模型完成适合它的任务；桌面负责安装与连接，网页 Monitor 展示详细过程。
 
-**v1.3.2 · author: desertdog**
+**v1.3.3 · author: desertdog**
 
-[项目首页](https://github.com/dogdesert633-cmd/codex-with-dsh-team/blob/main/README.zh-CN.md) · [下载与发布说明](https://github.com/dogdesert633-cmd/codex-with-dsh-team/releases/tag/v1.3.2)
+[项目首页](https://github.com/dogdesert633-cmd/codex-with-dsh-team/blob/main/README.zh-CN.md) · [下载与发布说明](https://github.com/dogdesert633-cmd/codex-with-dsh-team/releases/tag/v1.3.3)
 
 ## 安装前准备
 

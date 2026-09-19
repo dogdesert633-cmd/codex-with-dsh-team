@@ -31,6 +31,7 @@ button { font: inherit; }
 code, pre { font-family: var(--font-mono); }
 
 .app-shell { width: min(1320px, 100%); margin: 0 auto; padding: 10px 14px 14px; }
+.monitor-credit { padding: 10px 2px 0; text-align: right; color: var(--muted); font-size: 11px; line-height: 1.5; }
 
 /* --- 单条状态栏 -------------------------------------------------------------
    品牌 + 视图切换 + Live/Agent/Task/更新时间摘要 + 默认模型控件 + 一键同步，全部一行；

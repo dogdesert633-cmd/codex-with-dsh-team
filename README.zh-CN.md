@@ -1,141 +1,82 @@
-# Codex × DSH Team Toolkit（中文说明）
+# Codex × DSH Team Toolkit
 
-> 本分支新增 **v1.3.1 PyQt6 桌面控制台**：自动检查项目、单独安装与卸载依赖、同步设置，按项目管理团队。
-> 双击 EXE 即可使用，详见[桌面版说明](desktop/README.md)。旧版本仍可通过 Git 标签追溯。
+[English](README.md) · **简体中文** · Windows 桌面版
 
-[English](README.md) | **简体中文**
+## 让 Codex 带个小团队，一起把项目做完。
 
-想让 Codex 带着一个小团队，把项目一步步做完？这个工具包把探索、实现和审查分成明确的角色：
-Codex 负责协调与最终验收，需要时再接入 DeepSeek Harness（DSH），用你自己选择的外部模型分担代码
-实现与检查。
+写代码、查问题、做审查，来回切换很费精力，也会消耗 Codex 额度。这个工具包让 Codex 负责拆任务、协调和验收，再通过 DSH 把适合的工作交给你配置的外部模型。
 
-三个 Skill 相互独立、可按需组合：只用通用团队规则也能工作；想要外部模型参与时，再加上 DSH 的边界
-说明与调用路径。provider、model 与凭据都用你现有 DSH 里配置好的那一套。
+你决定使用哪个模型，桌面控制台帮你连接项目、同步设置、查看团队进度。也可以只用通用团队 Skill，直接在 Codex 中组织多角色协作。
 
-## 你会得到什么
+**[下载 Windows 版 v1.3.2](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/download/v1.3.2/codex-dsh-desktop-v1.3.2-windows-x64.zip)** · [查看发布页](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/tag/v1.3.2) · [安装说明](docs/INSTALLATION.md)
 
-三个相互独立的 Skill，安装进你的项目：
+> **安装前请了解：每个项目会单独安装一份 DSH 及运行依赖，约 200 MB。** 首次准备可能需要联网。它不会覆盖你原本的 DSH；各项目分别安装，不共用这份依赖。安装记录、npm 缓存和任务数据会额外占用空间。
 
-| Skill | 用途 |
-| --- | --- |
-| `codex-team` | 团队规则：怎么把任务拆成角色、派活、独立审查、返修，以及把过程记录成证据。单独就能用，不需要 DSH 或 Node。 |
-| `dsh-role-boundaries` | 明确 DSH 能做什么、不能做什么，避免把它看不见或判断不了的工作交过去。 |
-| `mcp-to-dsh` | 连接 DSH 的调用路径，以及一个本地 Monitor，用来看任务的进度、轮次与证据。 |
+![桌面控制台：按项目查看团队、任务和模型，右下角显示作者署名](docs/assets/desktop-overview.png)
 
-三者互不加载、互不依赖：按任务需要读取其中一到三个，不会在背后自动启动别的 Skill。
+*实际程序界面，任务与模型为演示数据。*
 
-## 两种用法
+## 你可以用它做什么
 
-**一、只用团队规则（不需要 DSH）。** 只读取 `codex-team` 时，Codex 就按这套规则自己推进：先规划，
-再按角色拆分，独立复查结果，最后用统一格式汇报。不装 Node 也能用。完整安装包默认已经把三个 Skill
-都装好了，按需要读取即可，不必再单独安装某一个。
+- **把工作拆给不同角色。** 探索、实现、审查各有分工，由 Codex 汇总结果并最终验收。
+- **用自己的模型分担任务。** 沿用你的 DSH 供应商、模型和凭据；桌面可以选择后续任务使用的模型。
+- **在一个窗口管理项目。** 自动检查安装状态，分别安装依赖、启动或停止 Monitor；一个项目一支团队，无需手动关联对话。
+- **看清工作进行到哪里。** 桌面展示项目和会话概览，网页 Monitor 展示详细任务、事件和日志。
 
-**二、把活分给 DSH。** 想让另一个模型参与时，让 Codex 同时读取三个 Skill：`dsh-role-boundaries`
-告诉它 DSH 可以被信任到什么程度，`mcp-to-dsh` 连上你的 DSH 并打开 Monitor，`codex-team` 让协调
-与最终验收仍然留在 Codex 这一侧。
+外部模型调用按你的供应商规则计费；分工的效果与费用取决于任务和所选模型。
 
-下面两段提示可以直接发给 Codex：
+## 几步开始
+
+准备 Windows 10/11、Node.js ≥ 22.19.0，以及已配置好模型和凭据的 DSH。桌面程序自带所需 GUI 环境，无需安装 Python；空白项目目录也可以使用，无需先创建 Git 仓库。
+
+1. 下载上方 ZIP，**完整解压**，双击 `CodexDshDesktop.exe`。保留旁边的 `_internal` 和 `toolkit` 文件夹。
+2. 在“配置与模型”点击 **自动查找 DSH 配置**，确认供应商和模型；找不到时再手动选择配置目录。
+3. **添加项目 → 安装工具包与依赖 → 启动 Monitor**。安装进度和结果都会显示在窗口中。
+4. 在 Codex 中打开同一个项目，发送下面的提示，并替换最后一行的任务：
 
 ```text
-请读取 .agents/skills/codex-team/SKILL.md，把它当成一个小团队来推进，最终决定权留给你：<你的任务>
+请读取以下三个 Skill：
+.agents/skills/codex-team/SKILL.md
+.agents/skills/dsh-role-boundaries/SKILL.md
+.agents/skills/mcp-to-dsh/SKILL.md
+由你协调和最终验收，让 DSH 分担适合的探索、实现与审查工作。
+我的任务：做一个可以重新开始、显示分数的贪吃蛇小游戏。
 ```
 
-```text
-请读取 .agents/skills/codex-team/SKILL.md、.agents/skills/dsh-role-boundaries/SKILL.md 和
-.agents/skills/mcp-to-dsh/SKILL.md，用 DSH 分担探索、实现与审查，并把证据回报给我：<你的任务>
-```
+请下载发布页的桌面 ZIP；GitHub 自动生成的 `Source code` 归档不包含可直接运行的 EXE。
 
-## 安装（Windows 桌面版）
+## 三个 Skill，按需使用
 
-1. 打开 [v1.3.1 下载页面](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/tag/v1.3.1)，在 **Assets** 中下载 `codex-dsh-desktop-v1.3.1-windows-x64.zip`。
-2. **完整解压**到一个便于找到的工具目录，双击 `CodexDshDesktop.exe`。请保留旁边的 `_internal` 和 `toolkit` 文件夹，无需安装 Python。
-3. 打开“配置与模型”，点击 **“自动查找 DSH 配置”**，核对默认供应商与模型。找到多份时选择一份；找不到时再手动选择包含 `settings.yaml` 的目录。
-4. 点击“添加项目”，选择你准备工作的项目文件夹；空白目录也可以，无需先初始化 Git。
-5. 查看自动检查结果，点击“安装工具包与依赖”。项目文件可离线安装，缺少的 DSH 依赖通过 npm 下载；安装完成后再点击“启动 Monitor”。已有项目会提示更新工具包。
-6. 在 Codex 中打开同一个项目文件夹，使用上面的 DSH 团队提示开始工作。
-
-`Source code (zip)` 和 `Source code (tar.gz)` 是源码归档，不包含可直接运行的桌面 EXE。
-桌面程序与项目可以放在不同目录。完整步骤见[桌面版说明](desktop/README.md)。
-
-结束工作或准备删除项目时，请点击 **“停止后台”**，等待文件占用释放。
-结束 Codex 对话或关闭网页不会自动停止后台；退出桌面时可以选择“停止后台并退出”。
-
-### 只安装项目文件（可选）
-
-安装包一次装齐所有内容。除非你确实只想要纯规则部分，否则不建议手工复制 Skill 目录。
-
-1. **下载**同一个 [v1.3.1 完整桌面包](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/download/v1.3.1/codex-dsh-desktop-v1.3.1-windows-x64.zip)。
-2. **完整解压**：安装器需要整棵目录，不是只要一个 EXE。
-3. **打开解压目录里的 `toolkit` 文件夹，运行 `CodexDshTeamToolkit.Install.exe`**；偏好脚本的话运行该目录下的 `Install.cmd`。
-4. **点击“浏览”，选择已有的项目目录。** 浏览器首次从安装程序所在目录打开，空白项目也可以。
-5. **点击“检查安装”，检查通过后点击“开始安装”。** 窗口显示进度与日志，完成后会明确显示“安装完成”，并可打开项目文件夹。在你确认之前不会写入项目。
-
-安装完成后，项目里会有：
-
-- `.agents/skills/codex-team`、`.agents/skills/dsh-role-boundaries`、`.agents/skills/mcp-to-dsh`；
-- 项目根目录的 `start_dsh_team.cmd`、`sync_dsh_team_config.cmd`，以及卸载器
-  `CodexDshTeamToolkit.Uninstall.exe`。
-
-卸载器与安装器采用一致的浅色界面，显示进度和日志。新版安装的 DSH 依赖会一并清理；修改过、额外添加或旧版未登记的文件保留并说明原因。点击“完成”后自动清理卸载器自身及不再需要的记录。
-
-项目自己的 `AGENTS.md` 不会被修改。以后想移除时，在项目根目录运行卸载器：它会移除可确认由工具包安装
-的文件；你自己修改或新增的文件会保留。
-
-## 首次运行
-
-第一次把任务交给 DSH 之前，你需要：
-
-- Windows 10 或 11；
-- **Node ≥ 22.19.0**；Git 可选，普通文件夹不需要初始化仓库或创建提交；
-- 一份已经能正常工作的 DSH，并且已配置好 provider、model 与凭据。
-
-桌面版将安装与启动分开，直接点击对应按钮即可，无需手动执行命令。每个项目一支团队，角色与会话自动显示，无需手动关联 Codex 对话。
-只使用项目安装器时，可以按以下方式启动（路径请替换成你自己的项目）：
-
-```powershell
-# 只需一次：在已安装的 skill 目录里安装依赖
-Set-Location 'D:\projects\my-project\.agents\skills\mcp-to-dsh'
-npm ci
-
-# 回到项目根目录，之后每次开始工作都在这里运行
-Set-Location '..\..\..'
-.\start_dsh_team.cmd
-```
-
-启动器使用工具包依赖中的 DSH，读取**你自己的配置**。找不到配置时，会弹出文件夹选择窗口：
-选择包含 `settings.yaml` 的 DSH 配置目录即可，不需要选择文件或输入命令。程序会记住位置；
-启动时同步，派发任务前检查变化，默认跟随你最新的 `agent-default-model`。
-安装包不携带开发者的供应商设置或凭据。详细说明见 [docs/CONFIGURATION.md](docs/CONFIGURATION.md) 与
-[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)。
-
-## 需要知道的几件事
-
-- **任务内容会离开本机。** 完成任务所需的提示、指令与文件内容会发送给你配置的 provider，使用你
-  自己的账号并受其条款约束，可能产生费用。具体发送与不发送什么，见 [docs/SECURITY.md](docs/SECURITY.md)。
-- **DSH 可以执行命令并读写文件。** 运行权限默认为 Full Access，工具请求默认自动通过——这是为了让
-  它能真正干活，不是操作系统级沙箱。请复查任务产生的改动，有 Git 时可查看 diff；细节见
-  [docs/SECURITY.md](docs/SECURITY.md)。
-- **运行产物不会自动被忽略。** 一次运行会在项目里写入 `artifacts/dsh-monitor/`、
-  `artifacts/dsh-gui-runs/` 与 `.dsh/contracts/`。安装器不会修改你的 `.gitignore`；不想让它们进入
-  版本管理，请在运行前自行把这些路径加进去。
-- **早期版本。** v1.3.1 是预发布版本，欢迎试用并反馈问题。真实的模型调用，以及部分
-  权限场景还需要更多验证，详见[安装说明](docs/INSTALLATION.md)与[安全说明](docs/SECURITY.md)。
-
-## 文档
-
-| 文档 | 内容 |
+| Skill | 负责什么 |
 | --- | --- |
-| [docs/INSTALLATION.md](docs/INSTALLATION.md) | 安装、卸载与前置条件的详细说明 |
-| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | 运行时配置、入口与退出码 |
-| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | 常见报错与处理办法 |
-| [docs/SECURITY.md](docs/SECURITY.md) | 数据流向、路径策略与保密边界 |
-| [CHANGELOG.md](CHANGELOG.md) | 逐版本的技术变更历史 |
+| `codex-team` | 通用多角色团队规则：拆分任务、分配角色、独立审查与返修。可单独使用，无需 DSH。 |
+| `dsh-role-boundaries` | DSH 的能力与角色边界；绘图、识图及视觉判断等任务留给具备相应能力的 Codex。 |
+| `mcp-to-dsh` | DSH 调用与本地 Monitor，展示任务过程和会话状态。 |
 
-## 致谢
+三个 Skill 独立，按任务选择读取。只想用团队规则时，让 Codex 读取 `codex-team/SKILL.md` 即可，无需安装 DSH 运行依赖。
 
-本项目在开发过程中参考了 [NanmiCoder/dsh-agent-teams](https://github.com/NanmiCoder/dsh-agent-teams)，
-这是 DeepSeek Harness 的 agent teams 插件。感谢该项目作者及贡献者公开分享其设计与实现。
+## 安装到哪里，如何移除
 
-## 许可证
+DSH 及其依赖安装在项目的 `.agents/skills/mcp-to-dsh/node_modules/`。当前依赖树约有 2.5 万个文件，内容大小实测约 214 MiB，主要是 DSH 模块、多供应商 SDK 及它们的依赖。这是上方“约 200 MB”的统计范围，不是完整安装后的总占用。
 
-原工具包采用 MIT，见 [LICENSE](LICENSE)。新增桌面控制台采用 GPL-3.0，见 [desktop/LICENSE](desktop/LICENSE)。
+你原本的 DSH 安装和配置保持不变；工具包从你选择的配置来源同步到自己的受管运行目录。安装不会改写项目的 `AGENTS.md` 或系统 `PATH`。
+
+结束工作时点击 **停止后台**。关闭网页或结束 Codex 对话不会停止后台服务。
+
+要移除工具包，先停止后台，再运行项目根目录的 `CodexDshTeamToolkit.Uninstall.exe`。卸载会清理已登记且未修改的工具包与依赖，保留你修改、新增的文件和任务记录，并显示保留原因。旧版或手动安装、没有原始内容记录的依赖会保留。只想移除依赖时，也可以在桌面点击“卸载依赖”。
+
+DSH 会调用你配置的模型服务，并可执行命令、读写项目文件；请确认任务内容适合交给该服务。详见[安全说明](docs/SECURITY.md)。
+
+## 更多帮助
+
+[完整安装说明](docs/INSTALLATION.md) · [桌面使用指南](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/blob/main/desktop/README.md) · [配置说明](docs/CONFIGURATION.md) · [常见问题](docs/TROUBLESHOOTING.md) · [更新日志](CHANGELOG.md)
+
+当前为预发布版本，欢迎在 [Issues](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/issues) 反馈使用中遇到的问题。
+
+## 作者与致谢
+
+**author: desertdog**
+
+开发过程中参考了 [NanmiCoder/dsh-agent-teams](https://github.com/NanmiCoder/dsh-agent-teams)。感谢作者与贡献者公开分享 DSH 多代理团队的设计和实现。
+
+原工具包采用 [MIT](LICENSE)；桌面控制台采用 [GPL-3.0](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/blob/main/desktop/LICENSE)。

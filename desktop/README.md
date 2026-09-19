@@ -1,10 +1,10 @@
-# Codex × DSH 桌面控制台
+# Codex × DSH Team · 桌面控制台
 
 把项目、模型和团队进度放在一个窗口里。Codex 负责协调和验收，DSH 使用你配置的外部模型完成适合它的任务；桌面负责安装与连接，网页 Monitor 展示详细过程。
 
 **v1.3.2 · author: desertdog**
 
-[项目首页](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/blob/main/README.zh-CN.md) · [下载与发布说明](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/tag/v1.3.2)
+[项目首页](https://github.com/dogdesert633-cmd/codex-with-dsh-team/blob/main/README.zh-CN.md) · [下载与发布说明](https://github.com/dogdesert633-cmd/codex-with-dsh-team/releases/tag/v1.3.2)
 
 ## 安装前准备
 
@@ -62,7 +62,7 @@ DSH 调用你配置的模型服务，可能产生该服务的费用，也会向�
 
 桌面项目列表和配置来源位置保存在 `%LOCALAPPDATA%\\CodexDshTeam\\`；指定 `CODEX_DSH_TEAM_BASE_DIR` 时使用对应目录。桌面记录不保存 API Key 或聊天正文，窗口日志会对凭据字段脱敏。
 
-[常见问题](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/blob/main/docs/TROUBLESHOOTING.md) · [安全说明](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/blob/main/docs/SECURITY.md) · [反馈问题](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/issues)
+[常见问题](https://github.com/dogdesert633-cmd/codex-with-dsh-team/blob/main/docs/TROUBLESHOOTING.md) · [安全说明](https://github.com/dogdesert633-cmd/codex-with-dsh-team/blob/main/docs/SECURITY.md) · [反馈问题](https://github.com/dogdesert633-cmd/codex-with-dsh-team/issues)
 
 当前为预发布版本。桌面代码采用 GPL-3.0，原工具包采用 MIT；发行包随附桌面源码及第三方许可证。开发与构建入口为 `desktop/main.py`、`desktop/build.py`，依赖见 `desktop/requirements.txt`。
 

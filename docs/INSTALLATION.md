@@ -1,7 +1,7 @@
 # Installation
 
 > **v1.3.2.** Download the **complete desktop ZIP** — `codex-dsh-desktop-v1.3.2-windows-x64.zip` — from
-> [releases/tag/v1.3.2](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/tag/v1.3.2),
+> [releases/tag/v1.3.2](https://github.com/dogdesert633-cmd/codex-with-dsh-team/releases/tag/v1.3.2),
 > extract it completely and open `CodexDshDesktop.exe`. Add a project, install the toolkit and
 > dependencies using the installation button, then start Monitor. For the file-only installer,
 > open the bundled `toolkit` directory; the instructions below describe that separate option.
@@ -36,7 +36,7 @@ The installer engine needs no administrator rights, no network access and no pac
 One run installs all three Skills into an existing project:
 
 1. **Download the release ZIP.** Use the `codex-dsh-desktop-v1.3.2-windows-x64.zip` asset attached to the
-   [v1.3.2 release](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/tag/v1.3.2)
+   [v1.3.2 release](https://github.com/dogdesert633-cmd/codex-with-dsh-team/releases/tag/v1.3.2)
    (or a `dist/` zip built by a maintainer).
 2. **Extract it completely and open the bundled `toolkit` directory.** The installer needs the whole package tree, not just the EXE.
 3. **Run `CodexDshTeamToolkit.Install.exe`** in the package root — the normal GUI entry — or

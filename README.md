@@ -1,4 +1,4 @@
-# Codex × DSH Team Toolkit
+# Codex × DSH Team
 
 **English** · [简体中文](README.zh-CN.md) · Windows desktop app
 
@@ -8,7 +8,7 @@
 
 Codex breaks down tasks, leads the team and checks the results; DSH carries out its assigned work. Choose models that fit your budget, and use the desktop console to connect projects, synchronize settings and follow progress. An independent multi-role team Skill also works without DSH.
 
-**[Download Windows v1.3.2](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/download/v1.3.2/codex-dsh-desktop-v1.3.2-windows-x64.zip)** · [Release page](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/tag/v1.3.2) · [Installation guide](docs/INSTALLATION.md)
+**[Download Windows v1.3.2](https://github.com/dogdesert633-cmd/codex-with-dsh-team/releases/download/v1.3.2/codex-dsh-desktop-v1.3.2-windows-x64.zip)** · [Release page](https://github.com/dogdesert633-cmd/codex-with-dsh-team/releases/tag/v1.3.2) · [Installation guide](docs/INSTALLATION.md)
 
 > **Each project gets its own DSH installation and runtime dependencies, approximately 200 MB.** Initial preparation may need internet access. Your existing DSH installation stays intact; dependencies are installed separately for each project. Installation records, npm caches and task data use additional space.
 
@@ -70,9 +70,9 @@ DSH calls your configured model service and can execute commands and modify proj
 
 ## Help
 
-[Installation](docs/INSTALLATION.md) · [Desktop guide](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/blob/main/desktop/README.md) · [Configuration](docs/CONFIGURATION.md) · [Troubleshooting](docs/TROUBLESHOOTING.md) · [Changelog](CHANGELOG.md)
+[Installation](docs/INSTALLATION.md) · [Desktop guide](https://github.com/dogdesert633-cmd/codex-with-dsh-team/blob/main/desktop/README.md) · [Configuration](docs/CONFIGURATION.md) · [Troubleshooting](docs/TROUBLESHOOTING.md) · [Changelog](CHANGELOG.md)
 
-This is a prerelease. Please report issues through [GitHub Issues](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/issues).
+This is a prerelease. Please report issues through [GitHub Issues](https://github.com/dogdesert633-cmd/codex-with-dsh-team/issues).
 
 ## Author and acknowledgements
 
@@ -80,4 +80,4 @@ This is a prerelease. Please report issues through [GitHub Issues](https://githu
 
 Development drew on [NanmiCoder/dsh-agent-teams](https://github.com/NanmiCoder/dsh-agent-teams). Thanks to its author and contributors for sharing their DSH agent-team design and implementation.
 
-The original toolkit uses [MIT](LICENSE); the desktop console uses [GPL-3.0](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/blob/main/desktop/LICENSE).
+The original toolkit uses [MIT](LICENSE); the desktop console uses [GPL-3.0](https://github.com/dogdesert633-cmd/codex-with-dsh-team/blob/main/desktop/LICENSE).

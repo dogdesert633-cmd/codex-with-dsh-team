@@ -1,4 +1,4 @@
-# Codex × DSH Team Toolkit
+# Codex × DSH Team
 
 [English](README.md) · **简体中文** · Windows 桌面版
 
@@ -8,7 +8,7 @@
 
 Codex 负责拆任务、带团队、把关结果；DSH 负责执行分配给它的工作。你可以选择价格更合适的模型，桌面控制台帮你完成项目连接、配置同步和进度查看。工具包还包含独立的通用多角色 Skill，不接入 DSH 也能使用。
 
-**[下载 Windows 版 v1.3.2](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/download/v1.3.2/codex-dsh-desktop-v1.3.2-windows-x64.zip)** · [查看发布页](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/tag/v1.3.2) · [安装说明](docs/INSTALLATION.md)
+**[下载 Windows 版 v1.3.2](https://github.com/dogdesert633-cmd/codex-with-dsh-team/releases/download/v1.3.2/codex-dsh-desktop-v1.3.2-windows-x64.zip)** · [查看发布页](https://github.com/dogdesert633-cmd/codex-with-dsh-team/releases/tag/v1.3.2) · [安装说明](docs/INSTALLATION.md)
 
 > **安装前请了解：每个项目会单独安装一份 DSH 及运行依赖，约 200 MB。** 首次准备可能需要联网。它不会覆盖你原本的 DSH；各项目分别安装，不共用这份依赖。安装记录、npm 缓存和任务数据会额外占用空间。
 
@@ -69,9 +69,9 @@ DSH 会调用你配置的模型服务，并可执行命令、读写项目文件�
 
 ## 更多帮助
 
-[完整安装说明](docs/INSTALLATION.md) · [桌面使用指南](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/blob/main/desktop/README.md) · [配置说明](docs/CONFIGURATION.md) · [常见问题](docs/TROUBLESHOOTING.md) · [更新日志](CHANGELOG.md)
+[完整安装说明](docs/INSTALLATION.md) · [桌面使用指南](https://github.com/dogdesert633-cmd/codex-with-dsh-team/blob/main/desktop/README.md) · [配置说明](docs/CONFIGURATION.md) · [常见问题](docs/TROUBLESHOOTING.md) · [更新日志](CHANGELOG.md)
 
-当前为预发布版本，欢迎在 [Issues](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/issues) 反馈使用中遇到的问题。
+当前为预发布版本，欢迎在 [Issues](https://github.com/dogdesert633-cmd/codex-with-dsh-team/issues) 反馈使用中遇到的问题。
 
 ## 作者与致谢
 
@@ -79,4 +79,4 @@ DSH 会调用你配置的模型服务，并可执行命令、读写项目文件�
 
 开发过程中参考了 [NanmiCoder/dsh-agent-teams](https://github.com/NanmiCoder/dsh-agent-teams)。感谢作者与贡献者公开分享 DSH 多代理团队的设计和实现。
 
-原工具包采用 [MIT](LICENSE)；桌面控制台采用 [GPL-3.0](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/blob/main/desktop/LICENSE)。
+原工具包采用 [MIT](LICENSE)；桌面控制台采用 [GPL-3.0](https://github.com/dogdesert633-cmd/codex-with-dsh-team/blob/main/desktop/LICENSE)。

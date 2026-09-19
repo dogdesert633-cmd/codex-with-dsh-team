@@ -24,7 +24,7 @@
 - 桌面和随附工具包统一为 1.3.0；已有项目可单独更新工具包并保留运行依赖。
 
 
-All notable changes to the Codex × DSH Team Toolkit are recorded here.
+All notable changes to the Codex × DSH Team are recorded here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [1.2.2] — 2026-09-19 — **Pre-release**

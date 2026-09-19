@@ -1,6 +1,6 @@
 # Codex × DSH Team Toolkit（中文说明）
 
-> 本分支新增 **v1.3.0 PyQt6 桌面控制台**：自动检查项目、单独安装与卸载依赖、同步设置，按项目管理团队。
+> 本分支新增 **v1.3.1 PyQt6 桌面控制台**：自动检查项目、单独安装与卸载依赖、同步设置，按项目管理团队。
 > 双击 EXE 即可使用，详见[桌面版说明](desktop/README.md)。旧版本仍可通过 Git 标签追溯。
 
 [English](README.md) | **简体中文**
@@ -47,7 +47,7 @@ Codex 负责协调与最终验收，需要时再接入 DeepSeek Harness（DSH）
 
 ## 安装（Windows 桌面版）
 
-1. 打开 [v1.3.0 下载页面](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/tag/v1.3.0)，在 **Assets** 中下载 `codex-dsh-desktop-v1.3.0-windows-x64.zip`。
+1. 打开 [v1.3.1 下载页面](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/tag/v1.3.1)，在 **Assets** 中下载 `codex-dsh-desktop-v1.3.1-windows-x64.zip`。
 2. **完整解压**到一个便于找到的工具目录，双击 `CodexDshDesktop.exe`。请保留旁边的 `_internal` 和 `toolkit` 文件夹，无需安装 Python。
 3. 打开“配置与模型”，点击 **“自动查找 DSH 配置”**，核对默认供应商与模型。找到多份时选择一份；找不到时再手动选择包含 `settings.yaml` 的目录。
 4. 点击“添加项目”，选择你准备工作的项目文件夹；空白目录也可以，无需先初始化 Git。
@@ -64,7 +64,7 @@ Codex 负责协调与最终验收，需要时再接入 DeepSeek Harness（DSH）
 
 安装包一次装齐所有内容。除非你确实只想要纯规则部分，否则不建议手工复制 Skill 目录。
 
-1. **下载**同一个 [v1.3.0 完整桌面包](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/download/v1.3.0/codex-dsh-desktop-v1.3.0-windows-x64.zip)。
+1. **下载**同一个 [v1.3.1 完整桌面包](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/download/v1.3.1/codex-dsh-desktop-v1.3.1-windows-x64.zip)。
 2. **完整解压**：安装器需要整棵目录，不是只要一个 EXE。
 3. **打开解压目录里的 `toolkit` 文件夹，运行 `CodexDshTeamToolkit.Install.exe`**；偏好脚本的话运行该目录下的 `Install.cmd`。
 4. **点击“浏览”，选择已有的项目目录。** 浏览器首次从安装程序所在目录打开，空白项目也可以。
@@ -75,6 +75,8 @@ Codex 负责协调与最终验收，需要时再接入 DeepSeek Harness（DSH）
 - `.agents/skills/codex-team`、`.agents/skills/dsh-role-boundaries`、`.agents/skills/mcp-to-dsh`；
 - 项目根目录的 `start_dsh_team.cmd`、`sync_dsh_team_config.cmd`，以及卸载器
   `CodexDshTeamToolkit.Uninstall.exe`。
+
+卸载器与安装器采用一致的浅色界面，显示进度和日志。新版安装的 DSH 依赖会一并清理；修改过、额外添加或旧版未登记的文件保留并说明原因。点击“完成”后自动清理卸载器自身及不再需要的记录。
 
 项目自己的 `AGENTS.md` 不会被修改。以后想移除时，在项目根目录运行卸载器：它会移除可确认由工具包安装
 的文件；你自己修改或新增的文件会保留。
@@ -116,7 +118,7 @@ Set-Location '..\..\..'
 - **运行产物不会自动被忽略。** 一次运行会在项目里写入 `artifacts/dsh-monitor/`、
   `artifacts/dsh-gui-runs/` 与 `.dsh/contracts/`。安装器不会修改你的 `.gitignore`；不想让它们进入
   版本管理，请在运行前自行把这些路径加进去。
-- **早期版本。** v1.3.0 是预发布版本，欢迎试用并反馈问题。真实的模型调用，以及部分
+- **早期版本。** v1.3.1 是预发布版本，欢迎试用并反馈问题。真实的模型调用，以及部分
   权限场景还需要更多验证，详见[安装说明](docs/INSTALLATION.md)与[安全说明](docs/SECURITY.md)。
 
 ## 文档

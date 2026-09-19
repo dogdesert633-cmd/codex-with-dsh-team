@@ -1,7 +1,7 @@
 # Installation
 
-> **v1.3.0.** Download the **complete desktop ZIP** — `codex-dsh-desktop-v1.3.0-windows-x64.zip` — from
-> [releases/tag/v1.3.0](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/tag/v1.3.0),
+> **v1.3.1.** Download the **complete desktop ZIP** — `codex-dsh-desktop-v1.3.1-windows-x64.zip` — from
+> [releases/tag/v1.3.1](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/tag/v1.3.1),
 > extract it completely and open `CodexDshDesktop.exe`. Add a project, install the toolkit and
 > dependencies using the installation button, then start Monitor. For the file-only installer,
 > open the bundled `toolkit` directory; the instructions below describe that separate option.
@@ -27,8 +27,8 @@ The installer engine needs no administrator rights, no network access and no pac
 
 One run installs all three Skills into an existing project:
 
-1. **Download the release ZIP.** Use the `codex-dsh-desktop-v1.3.0-windows-x64.zip` asset attached to the
-   [v1.3.0 release](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/tag/v1.3.0)
+1. **Download the release ZIP.** Use the `codex-dsh-desktop-v1.3.1-windows-x64.zip` asset attached to the
+   [v1.3.1 release](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/tag/v1.3.1)
    (or a `dist/` zip built by a maintainer).
 2. **Extract it completely and open the bundled `toolkit` directory.** The installer needs the whole package tree, not just the EXE.
 3. **Run `CodexDshTeamToolkit.Install.exe`** in the package root — the normal GUI entry — or
@@ -127,7 +127,7 @@ Runtime notes:
 - `npm ci` contacts the npm registry once to materialise the pinned tree. The installer engine, the
   maintainer tools and the tests are offline.
 - `node_modules/**` is never part of a release package, is never installed by the installer and is
-  never deleted by the uninstaller (it is untracked content, reported and kept).
+  retained when installed manually or by an older version without ownership records. Dependencies prepared through the v1.3.1 desktop are recorded with original-byte baselines in one compressed archive and are removed on uninstall if unchanged. User edits and additional files are preserved.
 - Later runs reuse the running Monitor for this project instead of starting a second one;
   `sync_dsh_team_config.cmd` re-syncs provider/model/credentials from your DSH Home on demand. The
   install and the runtime share one Team Home marker (`.codex-dsh-team-home.json`,
@@ -136,7 +136,7 @@ Runtime notes:
 
 ## What leaves the machine during real AI work
 
-Installing and uninstalling never use the network. When you actually run Team/Monitor AI tasks, your
+Copying/removing toolkit files and uninstalling dependencies are offline. Preparing runtime dependencies may contact npm when the required packages are not cached. When you actually run Team/Monitor AI tasks, your
 prompt, repository context and task text are sent to the **model provider configured in your DSH
 setup** — that traffic follows your provider account and terms and **may incur third-party cost**.
 That is your configuration, not toolkit telemetry: the toolkit itself sends nothing.
@@ -237,7 +237,7 @@ with code `7`.
 .\install\Invoke-Toolkit.ps1 -Action Uninstall -Target "D:\projects\my-project" -Yes
 ```
 
-The uninstaller prints an Uninstall Plan, then deletes only ownership-proven files. See
+The uninstaller opens a light window with a read-only plan, progress, scrollable logs and completion feedback. It deletes only ownership-proven, unchanged files, including dependencies prepared by this desktop version. Click Finish to close the window and clean up the executable and its final ownership records. Original project directories are preserved. Task records and user-created project content remain user data. See
 [docs/SECURITY.md](SECURITY.md) for exactly what is kept.
 
 `--plan-only` (EXE) and `-PlanOnly` (engine) show the plan and write nothing.
@@ -263,8 +263,8 @@ the EXEs from an extracted package.
 ```powershell
 pwsh -File installer/Build-Installer.ps1                     # installer EXE (needs in-box csc.exe)
 pwsh -File uninstaller/Build-Uninstaller.ps1                 # thin EXE (needs in-box csc.exe)
-pwsh -File tools/Build-Release.ps1 -Version 1.3.0            # dist/ package + zip (no checksum artefact)
-pwsh -File tools/Verify-Release.ps1 -Package dist/codex-dsh-team-toolkit-v1.3.0.zip
+pwsh -File tools/Build-Release.ps1 -Version 1.3.1            # dist/ package + zip (no checksum artefact)
+pwsh -File tools/Verify-Release.ps1 -Package dist/codex-dsh-team-toolkit-v1.3.1.zip
 ```
 
 The build is offline and never pushes anywhere. Useful properties:
@@ -281,7 +281,7 @@ The build is offline and never pushes anywhere. Useful properties:
   explicitly — the use is printed in the build output and recorded in `dist/build-report.json`:
 
   ```powershell
-  pwsh -File tools/Build-Release.ps1 -Version 1.3.0 `
+  pwsh -File tools/Build-Release.ps1 -Version 1.3.1 `
     -ContentScanAllowlist '.agents/skills/mcp-to-dsh/test/redaction.test.mjs'
   ```
 

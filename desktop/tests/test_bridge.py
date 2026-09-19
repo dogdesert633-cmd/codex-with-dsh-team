@@ -29,36 +29,42 @@ class BridgeTests(unittest.TestCase):
                               timeout=90, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
     def dependency_fixture(self):
+        repo = Path(__file__).resolve().parents[2]
+        engine = repo / 'install/Invoke-Toolkit.ps1'
+        helper = self.root / 'fixture.ps1'
+        helper.write_text("""param([string]$Repo,[string]$Project,[string]$Base)
+. (Join-Path $Repo 'tests/TestHarness.ps1')
+$package = New-ToolkitTestPackage -Root (Join-Path $Base 'package')
+$result = Invoke-ToolkitTestCommand -Options @{ Action='Install';Target=$Project;PackageRoot=$package.Root }
+if ($result.ExitCode) { throw ($result.Lines -join '\n') }
+$source = Join-Path $Base 'prepared'
+Write-ToolkitTestFile (Join-Path $source 'fixture/file.txt') 'dependency'
+$result = Invoke-ToolkitTestCommand -Options @{ Action='InstallDependencies';Target=$Project;DependencySource=$source;Yes=$true }
+if ($result.ExitCode) { throw ($result.Lines -join '\n') }
+""", encoding='utf-8-sig')
+        subprocess.run([backend.power_shell(), '-NoProfile', '-File', str(helper), '-Repo', str(repo),
+                        '-Project', str(self.workspace), '-Base', str(self.root)], check=True, capture_output=True, timeout=35)
         skill = self.workspace / ".agents/skills/mcp-to-dsh"
-        (skill / "node_modules/fixture").mkdir(parents=True)
-        (skill / "package.json").write_text('{"name":"mcp-to-dsh-skill"}')
-        (skill / "package-lock.json").write_text('{}')
-        (skill / "node_modules/fixture/file.txt").write_text("dependency")
-        (skill / "SKILL.md").write_text("keep skill")
-        (skill / "scripts").mkdir()
-        shutil.copy2(Path(__file__).resolve().parents[2] / "payload/.agents/skills/mcp-to-dsh/scripts/DshTeamCommon.ps1",
-                     skill / "scripts/DshTeamCommon.ps1")
+        (skill / 'package.json').write_text('{"name":"mcp-to-dsh-skill"}')
+        (skill / 'package-lock.json').write_text('{}')
+        (skill / 'SKILL.md').write_text('keep skill')
+        (skill / 'scripts').mkdir(exist_ok=True)
+        shutil.copy2(repo / "payload/.agents/skills/mcp-to-dsh/scripts/DshTeamCommon.ps1", skill / 'scripts/DshTeamCommon.ps1')
         (self.workspace / "node_modules").mkdir()
         (self.workspace / "node_modules/game.txt").write_text("keep project dependency")
         return skill
 
     def test_uninstall_only_skill_dependencies_and_is_repeatable_on_ps5_and_ps7(self):
+        skill = self.dependency_fixture()
         for shell in dict.fromkeys([backend.power_shell(), str(Path(os.environ["WINDIR"]) / "System32/WindowsPowerShell/v1.0/powershell.exe")]):
             with self.subTest(shell=shell):
-                skill = self.workspace / ".agents/skills/mcp-to-dsh"
-                if not skill.exists():
-                    skill = self.dependency_fixture()
-                else:
-                    (skill / "node_modules").mkdir()
-                    (skill / "node_modules/file.txt").write_text("dependency")
-                for _ in range(2):
-                    command = backend.bridge_command("RemoveDependencies", self.workspace)
-                    command[0] = shell
-                    result = subprocess.run(command, capture_output=True, timeout=25)
-                    self.assertEqual(result.returncode, 0, result.stdout.decode("utf-8", "replace") + result.stderr.decode("utf-8", "replace"))
-                    self.assertFalse((skill / "node_modules").exists())
-                    self.assertEqual((skill / "SKILL.md").read_text(), "keep skill")
-                    self.assertEqual((self.workspace / "node_modules/game.txt").read_text(), "keep project dependency")
+                command = backend.bridge_command("RemoveDependencies", self.workspace)
+                command[0] = shell
+                result = subprocess.run(command, capture_output=True, timeout=35)
+                self.assertEqual(result.returncode, 0, (result.stdout + result.stderr).decode("utf-8", "replace"))
+                self.assertFalse((skill / "node_modules").exists())
+                self.assertEqual((skill / "SKILL.md").read_text(), "keep skill")
+                self.assertEqual((self.workspace / "node_modules/game.txt").read_text(), "keep project dependency")
 
     def test_uninstall_refuses_junction_before_removing_any_content(self):
         skill = self.dependency_fixture()
@@ -77,6 +83,28 @@ class BridgeTests(unittest.TestCase):
         finally:
             # Remove the junction itself, never traverse or delete the target.
             os.rmdir(link)
+
+    @unittest.skipUnless(os.environ.get("DESKTOP_TEST_TOOLKIT_PACKAGE"), "Set DESKTOP_TEST_TOOLKIT_PACKAGE to test the complete bundle")
+    def test_prepare_records_dependencies_and_full_uninstall_restores_blank_project(self):
+        package = Path(os.environ['DESKTOP_TEST_TOOLKIT_PACKAGE'])
+        original = self.workspace / 'my-note.txt'
+        original.write_text('original user file')
+        installed = self.invoke('Install', package=package)
+        self.assertEqual(installed.returncode, 0, (installed.stdout + installed.stderr).decode('utf-8', 'replace'))
+        fake_bin = self.root / 'fixture-bin'
+        fake_bin.mkdir()
+        # Local npm stand-in: validates staging/import integration without any network.
+        (fake_bin / 'npm.cmd').write_bytes(b'@echo off\r\nmkdir "%~3\\node_modules\\fixture"\r\necho prepared>"%~3\\node_modules\\fixture\\file.txt"\r\nexit /b 0\r\n')
+        with patch.dict(os.environ, {'PATH': str(fake_bin) + os.pathsep + os.environ['PATH']}):
+            prepared = self.invoke('Prepare', package=package)
+        self.assertEqual(prepared.returncode, 0, (prepared.stdout + prepared.stderr).decode('utf-8', 'replace'))
+        self.assertFalse((self.workspace / 'artifacts').exists(), 'Temporary operation lock must not leave project artifacts')
+        engine = package / 'install/Invoke-Toolkit.ps1'
+        removed = subprocess.run([backend.power_shell(), '-NoProfile', '-File', str(engine), '-Action', 'Uninstall',
+                                  '-Target', str(self.workspace), '-Yes', '-NonInteractive'], capture_output=True, timeout=90)
+        self.assertEqual(removed.returncode, 0, (removed.stdout + removed.stderr).decode('utf-8', 'replace'))
+        self.assertEqual(list(self.workspace.iterdir()), [original])
+        self.assertEqual(original.read_text(), 'original user file')
 
     @unittest.skipUnless(os.environ.get("DESKTOP_TEST_TOOLKIT_PACKAGE"), "Set DESKTOP_TEST_TOOLKIT_PACKAGE to test the complete bundle")
     def test_install_into_empty_non_git_project_preserves_user_files(self):
@@ -106,14 +134,13 @@ class BridgeTests(unittest.TestCase):
         modules.mkdir()
         (modules / "keep.txt").write_text("keep installed dependency")
         removed = self.invoke("RemoveDependencies", package=current)
-        self.assertEqual(removed.returncode, 0, (removed.stdout + removed.stderr).decode("utf-8", "replace"))
-        self.assertFalse(modules.exists())
+        self.assertEqual(removed.returncode, 4, (removed.stdout + removed.stderr).decode("utf-8", "replace"))
+        self.assertTrue(modules.exists())  # Legacy dependencies have no original-byte record; preserve them.
         self.assertTrue((skill / "SKILL.md").is_file())
-        modules.mkdir()
         (modules / "keep.txt").write_text("keep installed dependency")
         result = self.invoke("Install", package=current)
         self.assertEqual(result.returncode, 0, (result.stdout + result.stderr).decode("utf-8", "replace"))
-        self.assertEqual(backend.read_json(self.workspace / ".codex-dsh-team-toolkit/manifest.json")["version"], "1.3.0")
+        self.assertEqual(backend.read_json(self.workspace / ".codex-dsh-team-toolkit/manifest.json")["version"], "1.3.1")
         self.assertEqual((skill / "scripts/start_dsh_team.ps1").read_bytes(),
                          (current / "payload/.agents/skills/mcp-to-dsh/scripts/start_dsh_team.ps1").read_bytes())
         self.assertEqual(note.read_text(), "keep game")

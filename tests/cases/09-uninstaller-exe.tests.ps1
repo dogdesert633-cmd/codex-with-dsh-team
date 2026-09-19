@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
   09 - the thin uninstaller EXE: build, plan-only, unattended uninstall, residual handling.
 
@@ -48,28 +48,15 @@ Test-Case -Name 'uninstaller exe: plan-only writes nothing and --yes uninstalls 
   }
   Assert-FileExists (Join-Path $project 'src\app.js') 'user files must survive the EXE uninstall'
 
-  # 3) the in-use EXE is reported as a minimal residual and keeps its ownership record,
-  #    so a later run can still finish the job without guessing
-  if (Test-Path -LiteralPath $installedExe) {
-    Assert-Match $output 'Residual' 'the residual must be reported'
-    $ledger = Join-Path $project '.codex-dsh-team-toolkit\manifest.json'
-    Assert-FileExists $ledger 'the residual keeps ownership evidence for a later run'
-    $ownership = Read-ToolkitOwnershipManifest -Path $ledger
-    Assert-Equal 1 @($ownership.files).Count 'only the residual may remain in the ledger'
-    Assert-Equal 'CodexDshTeamToolkit.Uninstall.exe' ([string]($ownership.files[0].path))
+  # Closing the EXE must finish its own cleanup through the ownership engine,
+  # including the reduced ledger/pristine copies; no second manual run is needed.
+  $state = Join-Path $project '.codex-dsh-team-toolkit'
+  $deadline = (Get-Date).AddSeconds(30)
+  while (((Test-Path -LiteralPath $installedExe) -or (Test-Path -LiteralPath $state)) -and (Get-Date) -lt $deadline) {
+    Start-Sleep -Milliseconds 250
   }
-
-  # 4) the EXE schedules its own deletion; once it is gone the engine can finish cleanly
-  $deadline = (Get-Date).AddSeconds(20)
-  while ((Test-Path -LiteralPath $installedExe) -and (Get-Date) -lt $deadline) {
-    Start-Sleep -Milliseconds 500
-  }
-  if (Test-Path -LiteralPath $installedExe) {
-    Write-ToolkitTestNote 'the scheduled self-deletion had not completed yet; finishing with the engine'
-  }
-  $finish = Invoke-ToolkitTestCommand -Options @{ Action = 'Uninstall'; Target = $project; Yes = $true }
-  Assert-Equal 0 $finish.ExitCode ('the follow-up run must finish the uninstall: ' + (Get-ToolkitTestOutput $finish))
-  Assert-FileMissing (Join-Path $project '.codex-dsh-team-toolkit') 'the state directory must be gone once nothing is owned any more'
+  Assert-FileMissing $installedExe 'the executable must clean itself after exit'
+  Assert-FileMissing $state 'the self-cleanup must also remove the reduced ledger and baselines'
   Assert-FileExists (Join-Path $project 'README.md') 'user files still survive'
 }
 

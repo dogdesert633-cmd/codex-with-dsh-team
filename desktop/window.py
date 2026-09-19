@@ -712,7 +712,7 @@ class MainWindow(QMainWindow):
         if self.state().get("online") or self.state().get("canStop"):
             self.fail("请先停止后台，再卸载依赖。")
             return
-        if QMessageBox.question(self, "卸载项目依赖", f"项目：{workspace}\n\n只移除此项目的 DSH 运行依赖。项目文件、Skill、用户配置和任务记录保留。\n以后使用时可重新安装。是否继续？") != QMessageBox.StandardButton.Yes:
+        if QMessageBox.question(self, "卸载项目依赖", f"项目：{workspace}\n\n清理此项目安装后未修改的 DSH 运行依赖。修改过、原本存在或旧版未登记的文件会保留并说明原因。项目文件、Skill、用户配置和任务记录保留。\n以后使用时可重新安装。是否继续？") != QMessageBox.StandardButton.Yes:
             return
         try:
             self.queue = [("卸载所选项目的 DSH 依赖", bridge_command("RemoveDependencies", workspace, package=bundled_toolkit()))]

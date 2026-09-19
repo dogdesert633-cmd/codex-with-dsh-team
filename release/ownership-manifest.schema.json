@@ -26,6 +26,16 @@
       }
     },
     "fileCount": { "type": "integer", "minimum": 1 },
+    "dependencyArchive": {
+      "enum": ["", "pristine/dependencies.zip"],
+      "description": "Optional compressed original contents for dependency paths. Entries use the project-relative path; comparisons read actual uncompressed bytes, never a digest. Other baselines retain the normal per-file layout."
+    },
+    "directories": {
+      "type": ["array", "null"],
+      "description": "Directories created by this installation, relative to the project. Existing project directories are preserved. Null or absent denotes a legacy ledger.",
+      "items": { "type": "string", "pattern": "^(?!/)(?!.*\\.\\.)(?!.*//)(?!.*\\\\)[^<>:\"|?*]+$" },
+      "uniqueItems": true
+    },
     "files": {
       "type": "array",
       "minItems": 1,

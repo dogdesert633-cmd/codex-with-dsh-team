@@ -40,6 +40,10 @@ function Enter-ProjectOperation {
         $CommonPath = Join-Path $PackageRoot 'payload\.agents\skills\mcp-to-dsh\scripts\DshTeamCommon.ps1'
     }
     . $CommonPath
+    foreach ($relative in @('artifacts', 'artifacts\dsh-monitor')) {
+        $candidate = [IO.Path]::GetFullPath((Join-Path $workspacePath $relative))
+        if (-not (Test-Path -LiteralPath $candidate)) { $script:createdOperationDirectories += $candidate }
+    }
     return Enter-DshWorkspaceLaunch -Workspace $workspacePath
 }
 function Assert-DependencyTarget {
@@ -67,6 +71,7 @@ function Assert-DependencyTarget {
     }
 }
 $operationLock = $null
+$script:createdOperationDirectories = @()
 try {
     if ($Action -eq 'Discover') {
         ConvertTo-Json -InputObject @(Get-MonitorProcesses) -Compress
@@ -93,40 +98,36 @@ try {
             Assert-DependencyTarget
             $operationLock = Enter-ProjectOperation -CommonPath (Join-Path $skill 'scripts\DshTeamCommon.ps1')
             Assert-ProjectStopped
-            Write-Output '项目文件已就绪。接下来安装固定版本的 DSH 及依赖；有 npm 缓存时优先复用。'
-            $npm = Get-Command npm.cmd -ErrorAction Stop
-            & $npm.Source ci --prefix $skill --prefer-offline --no-audit --no-fund
-            exit $LASTEXITCODE
+            $engine = if ($PackageRoot) { Join-Path $PackageRoot 'install\Invoke-Toolkit.ps1' } else { Join-Path $workspacePath '.codex-dsh-team-toolkit\engine\Invoke-Toolkit.ps1' }
+            & $engine -Action InstallDependencies -Target $workspacePath -PlanOnly -NonInteractive
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Write-Output '正在准备固定版本的 DSH 依赖；有 npm 缓存时优先复用。下载完成后登记原始内容，供卸载时识别用户改动。'
+            $stageBase = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
+            $stage = Join-Path $stageBase ('codex-dsh-dependencies-' + [Guid]::NewGuid().ToString('n'))
+            [IO.Directory]::CreateDirectory($stage) | Out-Null
+            try {
+                foreach ($name in @('package.json', 'package-lock.json')) { Copy-Item -LiteralPath (Join-Path $skill $name) -Destination (Join-Path $stage $name) }
+                $npm = Get-Command npm.cmd -ErrorAction Stop
+                & $npm.Source ci --prefix $stage --prefer-offline --no-audit --no-fund
+                if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+                & $engine -Action InstallDependencies -Target $workspacePath -DependencySource (Join-Path $stage 'node_modules') -Yes -NonInteractive -Progress
+                exit $LASTEXITCODE
+            } finally {
+                # This fresh temporary directory belongs only to this preparation run.
+                if ([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($stage)) -ne $stageBase -or [IO.Path]::GetFileName($stage) -notmatch '^codex-dsh-dependencies-[a-f0-9]{32}$') { throw 'Unexpected staging target' }
+                . $engine -Library
+                @(Get-ToolkitDependencyFiles $stage) | Out-Null
+                Remove-Item -LiteralPath $stage -Recurse -Force
+            }
         }
         RemoveDependencies {
             Assert-ProjectStopped
             Assert-DependencyTarget
             $operationLock = Enter-ProjectOperation -CommonPath (Join-Path $skill 'scripts\DshTeamCommon.ps1')
             Assert-ProjectStopped
-            if (-not (Test-Path -LiteralPath $modules)) {
-                Write-Output '此项目没有 DSH 运行依赖，无需卸载。'
-                exit 0
-            }
-            if (-not (Test-Path -LiteralPath $modules -PathType Container)) { throw 'Dependency target is not a directory' }
-            Write-Output '正在检查所选项目的依赖目录。'
-            # Check the entire subtree without following junctions/symlinks.
-            $pending = New-Object 'System.Collections.Generic.Stack[string]'
-            $pending.Push($modules)
-            while ($pending.Count -gt 0) {
-                foreach ($entry in @(Get-ChildItem -LiteralPath $pending.Pop() -Force)) {
-                    if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) {
-                        Write-Output '依赖目录内含符号链接或目录联接，已保留全部内容，未执行卸载。'
-                        throw 'Redirected dependency entry'
-                    }
-                    if ($entry.PSIsContainer) { $pending.Push($entry.FullName) }
-                }
-            }
-            Assert-ProjectStopped
-            Assert-DependencyTarget
-            Write-Output '正在卸载 .agents/skills/mcp-to-dsh/node_modules。'
-            Remove-Item -LiteralPath $modules -Recurse -Force
-            if (Test-Path -LiteralPath $modules) { throw 'Dependency removal is incomplete' }
-            Write-Output 'DSH 运行依赖已卸载。项目文件、Skill、用户配置和任务记录均保留。'
+            $engine = if ($PackageRoot) { Join-Path $PackageRoot 'install\Invoke-Toolkit.ps1' } else { Join-Path $workspacePath '.codex-dsh-team-toolkit\engine\Invoke-Toolkit.ps1' }
+            & $engine -Action RemoveDependencies -Target $workspacePath -Yes -NonInteractive -Progress
+            exit $LASTEXITCODE
         }
         Start {
             # A Monitor may have started while npm was preparing the project. Do not
@@ -191,4 +192,11 @@ try {
     exit 1
 } finally {
     if ($operationLock) { $operationLock.Dispose() }
+    foreach ($directory in @($script:createdOperationDirectories | Sort-Object Length -Descending)) {
+        if (-not $directory.StartsWith($workspacePath.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { continue }
+        try {
+            $item = Get-Item -LiteralPath $directory -Force -ErrorAction Stop
+            if (-not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -and @(Get-ChildItem -LiteralPath $directory -Force).Count -eq 0) { [IO.Directory]::Delete($directory) }
+        } catch { }
+    }
 }

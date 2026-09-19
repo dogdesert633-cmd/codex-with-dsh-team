@@ -1,0 +1,4 @@
+PyQt6==6.11.0
+PyQt6-Qt6==6.11.2
+PyYAML==6.0.3
+PyInstaller==6.21.0

@@ -1,5 +1,8 @@
 # Codex × DSH Team Toolkit（中文说明）
 
+> 本分支新增 **v1.2.0 PyQt6 桌面控制台**：检测本机 Monitor、选择 DSH 配置、同步设置、关联对话。
+> 双击 EXE 即可使用，详见[桌面版说明](desktop/README.md)。原有 v1.1.0 工具包实现保留。
+
 [English](README.md) | **简体中文**
 
 想让 Codex 带着一个小团队，把项目一步步做完？这个工具包把探索、实现和审查分成明确的角色：

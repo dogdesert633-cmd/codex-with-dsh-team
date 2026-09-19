@@ -52,18 +52,29 @@ Read .agents/skills/codex-team/SKILL.md, .agents/skills/dsh-role-boundaries/SKIL
 report the evidence back to me: <your task>
 ```
 
-## Install (complete Windows package)
+## Install (Windows desktop edition)
+
+1. Open the [v1.2.1 release page](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/tag/v1.2.1) and download `codex-dsh-desktop-v1.2.1-windows-x64.zip` under **Assets**.
+2. **Extract the complete archive** into a convenient tools folder and open `CodexDshDesktop.exe`. Keep its `_internal` and `toolkit` folders alongside it. Python is not required.
+3. Open “配置与模型” (Settings and models). Detect local DSH or browse to the configuration folder containing `settings.yaml`.
+4. Click “添加项目” (Add project) and choose your project folder. An empty folder works; Git initialization is not required.
+5. Click “启动 Monitor” (Start Monitor), confirm toolkit/dependency preparation, and wait for the completion message and online status. First-time dependency preparation needs internet access.
+6. Open the same project folder in Codex and use the DSH team prompt above.
+
+The `Source code (zip)` and `Source code (tar.gz)` assets contain source files, not the desktop EXE.
+The desktop app can live outside your project. See the [desktop guide](desktop/README.md) for details.
+
+Before deleting or moving a project, click **“停止后台” (Stop background)** and wait for file handles to be released.
+Closing a Codex conversation or browser tab does not stop the background service. When closing the desktop app, you can choose “停止后台并退出” (Stop background and exit).
+
+### Install project files only (optional)
 
 The package installs everything in one pass. Please do not copy Skill folders by hand unless you
 deliberately want only the rules-only part.
 
-1. **Download** `codex-dsh-team-toolkit-v1.1.0.zip`:
-   [direct download](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/download/v1.1.0/codex-dsh-team-toolkit-v1.1.0.zip)
-   — all assets and notes are on the
-   [v1.1.0 release page](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/tag/v1.1.0).
+1. **Download** the same [v1.2.1 complete desktop archive](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/download/v1.2.1/codex-dsh-desktop-v1.2.1-windows-x64.zip).
 2. **Extract the whole archive.** The installer needs the complete folder, not just the EXE.
-3. **Run `CodexDshTeamToolkit.Install.exe`** in the extracted folder. If you prefer a script, run
-   `Install.cmd` instead.
+3. **Open the extracted `toolkit` folder and run `CodexDshTeamToolkit.Install.exe`.** If you prefer a script, run `Install.cmd` from that folder instead.
 4. **Click Browse and choose an existing project folder.** The picker initially opens at the installer's directory; an empty project is fine.
 5. **Click Check Installation, then Start Installation.** The window shows progress, logs and an explicit success message, with a button to open your project. Nothing is written to the project before confirmation.
 
@@ -86,7 +97,8 @@ Before the first DSH-backed task you need:
 - **Node ≥ 22.19.0**; Git is optional, with no repository initialization or initial commit required;
 - a DSH installation that already works, with your provider, model and credentials configured.
 
-Then (replace the path with your own project):
+The desktop app prepares dependencies and starts the service when you click “启动 Monitor” (Start Monitor); no manual commands are needed.
+If you use only the project installer, run the following instead (replace the path with your own project):
 
 ```powershell
 # once, inside the installed skill directory
@@ -141,4 +153,4 @@ for sharing their design and implementation publicly.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+The original toolkit is MIT — see [LICENSE](LICENSE). The desktop console is GPL-3.0 — see [desktop/LICENSE](desktop/LICENSE).

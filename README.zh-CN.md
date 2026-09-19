@@ -45,15 +45,28 @@ Codex 负责协调与最终验收，需要时再接入 DeepSeek Harness（DSH）
 .agents/skills/mcp-to-dsh/SKILL.md，用 DSH 分担探索、实现与审查，并把证据回报给我：<你的任务>
 ```
 
-## 安装（Windows 完整安装包）
+## 安装（Windows 桌面版）
+
+1. 打开 [v1.2.1 下载页面](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/tag/v1.2.1)，在 **Assets** 中下载 `codex-dsh-desktop-v1.2.1-windows-x64.zip`。
+2. **完整解压**到一个便于找到的工具目录，双击 `CodexDshDesktop.exe`。请保留旁边的 `_internal` 和 `toolkit` 文件夹，无需安装 Python。
+3. 打开“配置与模型”，点击“检测本机 DSH”或“浏览目录”，选择包含 `settings.yaml` 的 DSH 配置文件夹。
+4. 点击“添加项目”，选择你准备工作的项目文件夹；空白目录也可以，无需先初始化 Git。
+5. 点击“启动 Monitor”，确认安装工具包和依赖，等待日志显示完成、项目状态变为在线。首次准备依赖需要联网。
+6. 在 Codex 中打开同一个项目文件夹，使用上面的 DSH 团队提示开始工作。
+
+`Source code (zip)` 和 `Source code (tar.gz)` 是源码归档，不包含可直接运行的桌面 EXE。
+桌面程序与项目可以放在不同目录。完整步骤见[桌面版说明](desktop/README.md)。
+
+结束工作或准备删除项目时，请点击 **“停止后台”**，等待文件占用释放。
+结束 Codex 对话或关闭网页不会自动停止后台；退出桌面时可以选择“停止后台并退出”。
+
+### 只安装项目文件（可选）
 
 安装包一次装齐所有内容。除非你确实只想要纯规则部分，否则不建议手工复制 Skill 目录。
 
-1. **下载** `codex-dsh-team-toolkit-v1.1.0.zip`：
-   [直接下载](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/download/v1.1.0/codex-dsh-team-toolkit-v1.1.0.zip)；
-   全部资产与说明见 [v1.1.0 Release 页](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/tag/v1.1.0)。
+1. **下载**同一个 [v1.2.1 完整桌面包](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/download/v1.2.1/codex-dsh-desktop-v1.2.1-windows-x64.zip)。
 2. **完整解压**：安装器需要整棵目录，不是只要一个 EXE。
-3. **运行解压目录里的 `CodexDshTeamToolkit.Install.exe`**；偏好脚本的话运行 `Install.cmd`。
+3. **打开解压目录里的 `toolkit` 文件夹，运行 `CodexDshTeamToolkit.Install.exe`**；偏好脚本的话运行该目录下的 `Install.cmd`。
 4. **点击“浏览”，选择已有的项目目录。** 浏览器首次从安装程序所在目录打开，空白项目也可以。
 5. **点击“检查安装”，检查通过后点击“开始安装”。** 窗口显示进度与日志，完成后会明确显示“安装完成”，并可打开项目文件夹。在你确认之前不会写入项目。
 
@@ -74,7 +87,8 @@ Codex 负责协调与最终验收，需要时再接入 DeepSeek Harness（DSH）
 - **Node ≥ 22.19.0**；Git 可选，普通文件夹不需要初始化仓库或创建提交；
 - 一份已经能正常工作的 DSH，并且已配置好 provider、model 与凭据。
 
-然后（路径请替换成你自己的项目）：
+桌面版会在点击“启动 Monitor”后准备依赖并启动服务，无需手动执行命令。
+只使用项目安装器时，可以按以下方式启动（路径请替换成你自己的项目）：
 
 ```powershell
 # 只需一次：在已安装的 skill 目录里安装依赖
@@ -122,4 +136,4 @@ Set-Location '..\..\..'
 
 ## 许可证
 
-MIT，见 [LICENSE](LICENSE)。
+原工具包采用 MIT，见 [LICENSE](LICENSE)。新增桌面控制台采用 GPL-3.0，见 [desktop/LICENSE](desktop/LICENSE)。

@@ -61,6 +61,8 @@ high-entropy mixed-case segments, `.git/`, `.dsh/`, `node_modules/`, `artifacts/
 `.ssh/`, `.aws/`, `.gnupg/`, `*.log`, `*.jsonl`, `*.session(s)`, server records and browser
 profiles.
 
+The sole runtime-file exception is `.agents/skills/mcp-to-dsh/node_modules/`: the desktop imports a freshly prepared tree into an absent destination and records exact original bytes in a compressed archive. Comparison reads uncompressed content, not archive checksums; a missing or damaged archive never authorizes deletion. Release manifests still cannot contain dependencies, other projects’ dependency directories stay outside this exception, and pre-existing unrecorded trees are never adopted. Recorded dependencies use the same modified-file preservation and quarantine rules as other owned files.
+
 ## 4. Transaction
 
 ```
@@ -136,13 +138,13 @@ the previous state is restored; the exit code is `6`, never a silent success.
    - not a regular file → kept and reported;
    - already absent → no-op.
 3. Show the plan, including untracked content inside managed directories (for example a
-   `node_modules` tree) that will be preserved.
+   manually installed or legacy unrecorded `node_modules` tree) that will be preserved. Dependencies installed by the current desktop are recorded and removed only when unchanged.
 4. Move deletable files into a toolkit-owned quarantine inside the transaction directory and
    verify each one; on any failure move everything back.
-5. Commit (discard the quarantine), then remove directories only when empty.
+5. Commit (discard the quarantine), then remove directories only when empty. New installations record created directories so pre-existing empty project directories survive.
 6. If anything could not be deleted — including the uninstaller EXE that is running — report
    it as a minimal residual and keep the corresponding ledger entries, so a later run can
-   still prove (or refuse) ownership. Nothing is ever removed recursively to "finish the job".
+   still prove (or refuse) ownership. The graphical uninstaller performs this final ownership-checked pass automatically after closing, including its remaining ledger/baselines. Nothing is ever removed recursively to "finish the job".
 
 ## 6. Confidentiality
 

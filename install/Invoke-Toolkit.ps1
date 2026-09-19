@@ -1,9 +1,9 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
   Codex x DSH Team Toolkit - single core engine (install / upgrade / uninstall).
 
   Design rules (fail-closed, zero guessing):
-    * Only files explicitly listed in the release manifest are managed.
+    * Release files and dependencies imported from a fresh prepared tree are managed.
     * Unknown same-name files block the whole operation; nothing is overwritten.
     * Upgrades may replace a file only while its current bytes are identical to the pristine
       baseline recorded for it; user-modified managed files block everything. No checksum,
@@ -32,7 +32,7 @@
 #>
 [CmdletBinding()]
 param(
-  [ValidateSet('Install', 'Uninstall')]
+  [ValidateSet('Install', 'Uninstall', 'InstallDependencies', 'RemoveDependencies')]
   [string]$Action = 'Install',
 
   [string]$Target = '',
@@ -40,6 +40,8 @@ param(
   [string]$PackageRoot = '',
 
   [string]$ReleaseManifest = '',
+
+  [string]$DependencySource = '',
 
   [switch]$PlanOnly,
 
@@ -140,6 +142,8 @@ $script:TKCreatedStateDirectory = $false
 $script:TKLogEnabled = $false
 $script:TKLogPath = ''
 $script:TKTransactionDirectory = ''
+$script:TKDependencyArchive = $null
+$script:TKDependencyArchiveRegistered = $false
 
 # ---------------------------------------------------------------------------
 # Confined redaction helpers (used before anything is printed or persisted)
@@ -390,25 +394,9 @@ function Assert-ToolkitRelativePath {
 
   $p = ConvertTo-ToolkitRelativePath -Path $Path
 
-  Assert-ToolkitPathRule -Ok (-not $p.StartsWith('/')) -Reason 'absolute path or UNC prefix' -Path $p
-  Assert-ToolkitPathRule -Ok (-not ($p -match '^[A-Za-z]:')) -Reason 'drive-qualified path' -Path $p
-  Assert-ToolkitPathRule -Ok (-not ($p -match '^\\\\')) -Reason 'UNC or device path' -Path $p
-  Assert-ToolkitPathRule -Ok (-not ($p -match '^//')) -Reason 'UNC path' -Path $p
-  Assert-ToolkitPathRule -Ok (-not ($p -match '\\')) -Reason 'unnormalized separator' -Path $p
-  Assert-ToolkitPathRule -Ok (-not ($p -match '//')) -Reason 'empty path segment' -Path $p
-  Assert-ToolkitPathRule -Ok ($p.Length -le 240) -Reason 'path too long' -Path $p
-  Assert-ToolkitPathRule -Ok ($p -notmatch '[\x00-\x1f<>:"|?*]') -Reason 'invalid character' -Path $p
-
-  $segments = @($p.Split('/'))
-  foreach ($segment in $segments) {
-    Assert-ToolkitPathRule -Ok ($segment -ne '') -Reason 'empty path segment' -Path $p
-    Assert-ToolkitPathRule -Ok ($segment -ne '.' -and $segment -ne '..') -Reason 'relative traversal' -Path $p
-    Assert-ToolkitPathRule -Ok ($segment.Length -le 100) -Reason 'path segment too long' -Path $p
-    Assert-ToolkitPathRule -Ok (-not $segment.EndsWith('.')) -Reason 'trailing dot in segment' -Path $p
-    Assert-ToolkitPathRule -Ok (-not $segment.EndsWith(' ')) -Reason 'trailing space in segment' -Path $p
-    $stem = $segment.Split('.')[0]
-    Assert-ToolkitPathRule -Ok (-not ($stem -match '(?i)^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$')) -Reason 'reserved device name' -Path $p
-  }
+  Initialize-ToolkitNativeIO
+  $problem = [CodexDshToolkit.NativeIOV131]::RelativePathProblem($p)
+  Assert-ToolkitPathRule -Ok ($null -eq $problem) -Reason $problem -Path $p
   return $p
 }
 
@@ -463,6 +451,127 @@ function Assert-ToolkitPathNotDenied {
   }
 }
 
+function Test-ToolkitDependencyPath {
+  param([string]$RelativePath)
+  return $RelativePath.StartsWith('.agents/skills/mcp-to-dsh/node_modules/', [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Assert-ToolkitOwnedPath {
+  param([string]$RelativePath)
+  $normalized = Assert-ToolkitRelativePath -Path $RelativePath
+  # This exception is ONLY for recorded, project-local dependencies. Release manifests
+  # still use the stricter deny policy; no other node_modules directory can be owned.
+  if (-not (Test-ToolkitDependencyPath $normalized)) { Assert-ToolkitPathNotDenied $normalized }
+}
+
+function Get-ToolkitDependencyFiles {
+  param([string]$Root)
+  $pending = New-Object 'System.Collections.Generic.Stack[string]'
+  $pending.Push($Root)
+  while ($pending.Count) {
+    $directory = $pending.Pop()
+    Assert-ToolkitNoReparseInPath -Root $Root -RelativePath ($directory.Substring($Root.Length).TrimStart('\').Replace('\', '/') + '/.probe')
+    foreach ($item in @(Get-ChildItem -LiteralPath $directory -Force)) {
+      if (Test-ToolkitReparseItem $item) { Throw-ToolkitFailure 3 '依赖目录含符号链接或目录联接，已停止，未清理任何文件。' }
+      if ($item.PSIsContainer) { $pending.Push($item.FullName) } else { $item }
+    }
+  }
+}
+
+function Assert-ToolkitMonitorStopped {
+  param([string]$TargetRoot)
+  $expectedScript = Join-Path $TargetRoot '.agents\skills\mcp-to-dsh\src\server.mjs'
+  foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name='node.exe'")) {
+    $command = [string]$process.CommandLine
+    $workspaceMatch = [regex]::Match($command, '(?:^|\s)--workspace\s+(?:"([^"]+)"|(\S+))')
+    $scriptMatch = [regex]::Match($command, '(?:^|\s)(?:"([^"]*[\\/]server\.mjs)"|(\S*[\\/]server\.mjs))(?=\s|$)')
+    if (-not $workspaceMatch.Success -or -not $scriptMatch.Success) { continue }
+    $workspaceValue = if ($workspaceMatch.Groups[1].Success) { $workspaceMatch.Groups[1].Value } else { $workspaceMatch.Groups[2].Value }
+    $scriptValue = if ($scriptMatch.Groups[1].Success) { $scriptMatch.Groups[1].Value } else { $scriptMatch.Groups[2].Value }
+    if ([IO.Path]::GetFullPath($workspaceValue).TrimEnd('\') -eq $TargetRoot.TrimEnd('\') -and [IO.Path]::GetFullPath($scriptValue) -eq $expectedScript) {
+      Throw-ToolkitFailure 3 '此项目的 Monitor 仍在运行，请在桌面控制台点击“停止后台”后重试。未删除任何文件。'
+    }
+  }
+}
+
+function Invoke-ToolkitDependencyInstall {
+  param([hashtable]$Options)
+  $targetRoot = Resolve-ToolkitTargetPath $Options.Target
+  $state = Join-Path $targetRoot $script:TKStateDirectory
+  $manifestPath = Join-Path $state $script:TKManifestName
+  $relativeRoot = '.agents/skills/mcp-to-dsh/node_modules'
+  $destinationRoot = Get-ToolkitFullPath $targetRoot $relativeRoot
+  Assert-ToolkitNoReparseInPath $targetRoot ($relativeRoot + '/.probe')
+  Assert-ToolkitNoReparseInPath $targetRoot ($script:TKStateDirectory + '/manifest.json')
+  Assert-ToolkitStateRootsSafe $state | Out-Null
+  $ownership = Read-ToolkitOwnershipManifest $manifestPath
+  $archivePath = Join-Path $state 'pristine\dependencies.zip'
+  Assert-ToolkitNoReparseInPath $state 'pristine/dependencies.zip'
+  if (Test-Path -LiteralPath $archivePath) { Throw-ToolkitFailure 4 '依赖原始内容记录仍存在，请先完成依赖卸载后重试。' }
+  if (Test-Path -LiteralPath $destinationRoot) {
+    Throw-ToolkitFailure 4 '依赖目录已经存在。为保留原有文件，请先使用“卸载依赖”；若有修改或旧版未登记文件，日志会说明保留原因。'
+  }
+  if ([bool]$Options.PlanOnly) { Write-ToolkitLine '依赖安装检查通过，未写入项目。'; return 0 }
+  if (-not [bool]$Options.Yes) { Throw-ToolkitFailure 2 '依赖安装需要确认。' }
+  $source = Resolve-ToolkitTargetPath ([string]$Options.DependencySource)
+  Assert-ToolkitNoReparseInPath ([IO.Path]::GetPathRoot($source)) ($source.Substring([IO.Path]::GetPathRoot($source).Length) + '/.probe')
+  $sourceFiles = @(Get-ToolkitDependencyFiles $source)
+  if (-not $sourceFiles.Count) { Throw-ToolkitFailure 3 '准备好的依赖目录为空。' }
+  $records = @($sourceFiles | ForEach-Object { @{ path = $relativeRoot + '/' + $_.FullName.Substring($source.Length + 1).Replace('\', '/') } })
+  foreach ($record in $records) {
+    Assert-ToolkitOwnedPath $record.path
+    Assert-ToolkitNoReparseInPath $state (Get-ToolkitPristineRelativePath $record.path)
+  }
+  $lock = $null
+  try {
+    $lock = Enter-ToolkitLock $state
+    $ownership = Read-ToolkitOwnershipManifest $manifestPath
+    Assert-ToolkitNoReparseInPath $targetRoot ($relativeRoot + '/.probe')
+    if (Test-Path -LiteralPath $destinationRoot) { Throw-ToolkitFailure 4 '依赖目录在准备期间出现，已保留其内容。' }
+    # Store exact original bytes before publishing any dependency file. A crash leaves
+    # ownership evidence for the partial install; no pre-existing tree is ever adopted.
+    $allRecords = @($ownership.files | Where-Object { -not (Test-ToolkitDependencyPath $_.path) }) + $records
+    $newOwnership = New-ToolkitOwnershipManifest -InstallId $ownership.installId -Version $ownership.version -TargetRoot $targetRoot -Files $allRecords
+    $dependencyDirectories = @($records | ForEach-Object {
+      $segments = $_.path.Split('/')
+      for ($part = 4; $part -lt $segments.Count; $part++) { [string]::Join('/', $segments[0..($part - 1)]) }
+    } | Sort-Object -Unique)
+    $newOwnership.directories = @(@($ownership.directories) + $dependencyDirectories | Where-Object { $_ } | Sort-Object -Unique)
+    $newOwnership.dependencyArchive = 'pristine/dependencies.zip'
+    Write-ToolkitJsonAtomic $newOwnership $manifestPath
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [IO.Directory]::CreateDirectory((Join-Path $state 'pristine')) | Out-Null
+    $archiveStream = [IO.File]::Open($archivePath, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    try {
+      $archive = New-Object IO.Compression.ZipArchive($archiveStream, [IO.Compression.ZipArchiveMode]::Create, $true)
+      try {
+        for ($index = 0; $index -lt $records.Count; $index++) {
+          [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $sourceFiles[$index].FullName, $records[$index].path, [IO.Compression.CompressionLevel]::Fastest) | Out-Null
+          if ($index % 100 -eq 0) { Write-ToolkitProgress stage $index $records.Count }
+        }
+      } finally { $archive.Dispose() }
+      $archiveStream.Flush($true)
+    } finally { $archiveStream.Dispose() }
+    # Publish files from the completed archive, so their bytes are exactly the
+    # recorded originals. No existing project file can be overwritten.
+    $archive = [IO.Compression.ZipFile]::OpenRead($archivePath)
+    try {
+      for ($index = 0; $index -lt $records.Count; $index++) {
+        $relative = $records[$index].path
+        Assert-ToolkitNoReparseInPath $targetRoot $relative
+        $destination = Get-ToolkitFullPath $targetRoot $relative
+        [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($destination)) | Out-Null
+        [IO.Compression.ZipFileExtensions]::ExtractToFile($archive.GetEntry($relative), $destination, $false)
+        if ($index % 100 -eq 0) { Write-ToolkitProgress apply $index $records.Count }
+      }
+    } finally { $archive.Dispose() }
+    Write-ToolkitLine ('DSH 运行依赖已安装并登记：' + $records.Count + ' 个文件。卸载时自动保留修改过的文件。')
+    Write-ToolkitProgress commit 1 1
+    return 0
+  } finally { Exit-ToolkitLock $lock }
+}
+
 function ConvertTo-ToolkitNativePath {
   param([string]$RelativePath)
   return ([string]$RelativePath).Replace('/', '\')
@@ -508,6 +617,126 @@ function Test-ToolkitReparseItem {
   return $false
 }
 
+function Initialize-ToolkitNativeIO {
+  # Dependency trees contain tens of thousands of files. Compare their bytes in
+  # native .NET code rather than interpreting a PowerShell loop for every byte.
+  # This still reads actual content and never computes or trusts a digest.
+  if (-not ('CodexDshToolkit.NativeIOV131' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Collections.Generic;
+using System.Text.RegularExpressions;
+namespace CodexDshToolkit {
+  public static class NativeIOV131 {
+    public static string RelativePathProblem(string path) {
+      if (path.StartsWith("/", StringComparison.Ordinal)) return "absolute path or UNC prefix";
+      if (Regex.IsMatch(path, "^[A-Za-z]:")) return "drive-qualified path";
+      if (path.Contains("\\")) return "unnormalized separator";
+      if (path.Contains("//")) return "empty path segment";
+      if (path.Length > 240) return "path too long";
+      if (Regex.IsMatch(path, "[\\x00-\\x1f<>:\"|?*]")) return "invalid character";
+      foreach (string segment in path.Split('/')) {
+        if (segment.Length == 0) return "empty path segment";
+        if (segment == "." || segment == "..") return "relative traversal";
+        if (segment.Length > 100) return "path segment too long";
+        if (segment.EndsWith(".", StringComparison.Ordinal)) return "trailing dot in segment";
+        if (segment.EndsWith(" ", StringComparison.Ordinal)) return "trailing space in segment";
+        if (Regex.IsMatch(segment.Split('.')[0], "^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)) return "reserved device name";
+      }
+      return null;
+    }
+    public static bool EqualStreamFile(Stream baseline, string path) {
+      using (var target = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read)) {
+        byte[] x = new byte[65536], y = new byte[65536];
+        int n;
+        while ((n = baseline.Read(x, 0, x.Length)) > 0) {
+          int read = 0, next;
+          while (read < n && (next = target.Read(y, read, n - read)) > 0) read += next;
+          if (read != n) return false;
+          for (int i = 0; i < n; i++) if (x[i] != y[i]) return false;
+        }
+        return target.ReadByte() == -1;
+      }
+    }
+    public static string DuplicateKey(string json) {
+      var stack = new Stack<HashSet<string>>();
+      for (int i = 0; i < json.Length; i++) {
+        char ch = json[i];
+        if (ch == '{') stack.Push(new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+        else if (ch == '[') stack.Push(null);
+        else if (ch == '}' || ch == ']') { if (stack.Count > 0) stack.Pop(); }
+        else if (ch == '"') {
+          int start = ++i;
+          for (; i < json.Length; i++) {
+            if (json[i] == '\\') { i++; continue; }
+            if (json[i] == '"') break;
+          }
+          int next = i + 1;
+          while (next < json.Length && Char.IsWhiteSpace(json[next])) next++;
+          if (i < json.Length && next < json.Length && json[next] == ':' && stack.Count > 0 && stack.Peek() != null) {
+            string key = Regex.Unescape(json.Substring(start, i - start));
+            if (!stack.Peek().Add(key)) return key;
+          }
+        }
+      }
+      return null;
+    }
+    public static bool RegularFile(string path) {
+      try {
+        var attrs = File.GetAttributes(path);
+        return (attrs & (FileAttributes.Directory | FileAttributes.ReparsePoint)) == 0;
+      } catch { return false; }
+    }
+    public static void StorePristine(string source, string destination) {
+      string parent = Path.GetDirectoryName(destination);
+      Directory.CreateDirectory(parent);
+      string temp = Path.Combine(parent, ".pristine-" + Guid.NewGuid().ToString("n"));
+      try {
+        using (var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read))
+        using (var output = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None)) {
+          input.CopyTo(output); output.Flush();
+        }
+        if (!Equal(source, temp)) throw new IOException("Pristine copy differs from its source");
+        if (File.Exists(destination)) File.Replace(temp, destination, null);
+        else File.Move(temp, destination);
+      } finally { if (File.Exists(temp)) File.Delete(temp); }
+    }
+    public static int CheckPath(string root, string relative) {
+      string current = Path.GetFullPath(root);
+      try { if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0) return 2; }
+      catch (FileNotFoundException) { return 1; }
+      catch (DirectoryNotFoundException) { return 1; }
+      foreach (string part in relative.Replace('/', '\\').Split('\\')) {
+        if (part.Length == 0) continue;
+        current = Path.Combine(current, part);
+        try { if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0) return 2; }
+        catch (FileNotFoundException) { return 0; }
+        catch (DirectoryNotFoundException) { return 0; }
+      }
+      return 0;
+    }
+    public static bool Equal(string first, string second) {
+      using (var a = new FileStream(first, FileMode.Open, FileAccess.Read, FileShare.Read))
+      using (var b = new FileStream(second, FileMode.Open, FileAccess.Read, FileShare.Read)) {
+        if (a.Length != b.Length) return false;
+        byte[] x = new byte[65536], y = new byte[65536];
+        int n;
+        while ((n = a.Read(x, 0, x.Length)) > 0) {
+          int read = 0, next;
+          while (read < n && (next = b.Read(y, read, n - read)) > 0) read += next;
+          if (read != n) return false;
+          for (int i = 0; i < n; i++) if (x[i] != y[i]) return false;
+        }
+        return b.ReadByte() == -1;
+      }
+    }
+  }
+}
+'@
+  }
+}
+
 function Assert-ToolkitNoReparseInPath {
   <#
     Walks every existing path segment from the root down to the leaf and refuses any
@@ -519,29 +748,13 @@ function Assert-ToolkitNoReparseInPath {
     [switch]$RequireRootExists
   )
 
-  $rootItem = Get-ToolkitItemOrNull -Path $Root
-  if ($null -eq $rootItem) {
-    if ($RequireRootExists) {
-      Throw-ToolkitFailure -ExitCode $script:TKExitBlocked -Message 'Target root does not exist.' -Detail ('path=' + (Get-ToolkitSafePath -Path $Root))
-    }
-    return
+  Initialize-ToolkitNativeIO
+  $result = [CodexDshToolkit.NativeIOV131]::CheckPath($Root, $RelativePath)
+  if ($result -eq 1 -and $RequireRootExists) {
+    Throw-ToolkitFailure -ExitCode $script:TKExitBlocked -Message 'Target root does not exist.'
   }
-  if (Test-ToolkitReparseItem -Item $rootItem) {
-    Throw-ToolkitFailure -ExitCode $script:TKExitBlocked -Message 'Target root is a symlink / junction / reparse point.' -Detail ('path=' + (Get-ToolkitSafePath -Path $Root))
-  }
-
-  $current = [System.IO.Path]::GetFullPath($Root)
-  $segments = @((ConvertTo-ToolkitNativePath -RelativePath $RelativePath).Split('\'))
-  foreach ($segment in $segments) {
-    if ([string]::IsNullOrEmpty($segment)) { continue }
-    $current = Join-Path $current $segment
-    $item = Get-ToolkitItemOrNull -Path $current
-    if ($null -eq $item) { continue }
-    if (Test-ToolkitReparseItem -Item $item) {
-      Throw-ToolkitFailure -ExitCode $script:TKExitBlocked `
-        -Message 'Path traverses a symlink / junction / reparse point.' `
-        -Detail ('path=' + (Get-ToolkitSafePath -Path $RelativePath))
-    }
+  if ($result -eq 2) {
+    Throw-ToolkitFailure -ExitCode $script:TKExitBlocked -Message 'Path traverses a symlink / junction / reparse point.' -Detail ('path=' + (Get-ToolkitSafePath -Path $RelativePath))
   }
 }
 
@@ -583,37 +796,13 @@ function Test-ToolkitFileContentEqual {
   )
 
   if ([string]::IsNullOrEmpty($PathA) -or [string]::IsNullOrEmpty($PathB)) { return $false }
-  if (-not (Test-ToolkitPathIsRegularFile -Path $PathA)) { return $false }
-  if (-not (Test-ToolkitPathIsRegularFile -Path $PathB)) { return $false }
-
-  $lengthA = (Get-Item -LiteralPath $PathA).Length
-  $lengthB = (Get-Item -LiteralPath $PathB).Length
-  if ($lengthA -ne $lengthB) { return $false }
-  if ($lengthA -eq 0) { return $true }
-
-  $streamA = $null
-  $streamB = $null
+  Initialize-ToolkitNativeIO
+  if (-not [CodexDshToolkit.NativeIOV131]::RegularFile($PathA) -or -not [CodexDshToolkit.NativeIOV131]::RegularFile($PathB)) { return $false }
   try {
-    $streamA = New-Object System.IO.FileStream($PathA, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
-    $streamB = New-Object System.IO.FileStream($PathB, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
-    $bufferA = New-Object byte[] 65536
-    $bufferB = New-Object byte[] 65536
-    while ($true) {
-      $readA = $streamA.Read($bufferA, 0, $bufferA.Length)
-      $readB = $streamB.Read($bufferB, 0, $bufferB.Length)
-      if ($readA -ne $readB) { return $false }
-      if ($readA -le 0) { return $true }
-      for ($index = 0; $index -lt $readA; $index++) {
-        if ($bufferA[$index] -ne $bufferB[$index]) { return $false }
-      }
-    }
+    return [CodexDshToolkit.NativeIOV131]::Equal($PathA, $PathB)
   }
   catch {
     return $false
-  }
-  finally {
-    if ($null -ne $streamA) { $streamA.Dispose() }
-    if ($null -ne $streamB) { $streamB.Dispose() }
   }
 }
 
@@ -701,6 +890,11 @@ function Write-ToolkitPristineFile {
 
   Test-ToolkitStatePristineRootSafe -StateDirectory $StateDirectory
   $destination = Get-ToolkitPristineFullPath -StateDirectory $StateDirectory -RelativePath $RelativePath
+  if (Test-ToolkitDependencyPath $RelativePath) {
+    Assert-ToolkitNoReparseInPath $StateDirectory (Get-ToolkitPristineRelativePath $RelativePath)
+    [CodexDshToolkit.NativeIOV131]::StorePristine($SourcePath, $destination)
+    return $destination
+  }
   if ([string]::IsNullOrEmpty($destination)) {
     Throw-ToolkitFailure -ExitCode $script:TKExitTransaction -Message 'A pristine baseline path could not be derived; refusing to continue.' -Detail ('path=' + (Get-ToolkitSafePath -Path $RelativePath))
   }
@@ -735,6 +929,23 @@ function Test-ToolkitPristineMatches {
   )
 
   Test-ToolkitStatePristineRootSafe -StateDirectory $StateDirectory
+  if ($script:TKDependencyArchiveRegistered -and (Test-ToolkitDependencyPath $RelativePath)) {
+    Assert-ToolkitNoReparseInPath $StateDirectory 'pristine/dependencies.zip'
+    Initialize-ToolkitNativeIO
+    if (-not [CodexDshToolkit.NativeIOV131]::RegularFile($TargetPath)) { return $false }
+    try {
+      if ($null -eq $script:TKDependencyArchive) {
+        Add-Type -AssemblyName System.IO.Compression
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $script:TKDependencyArchive = [IO.Compression.ZipFile]::OpenRead((Join-Path $StateDirectory 'pristine\dependencies.zip'))
+      }
+      $entry = $script:TKDependencyArchive.GetEntry($RelativePath)
+      if ($null -eq $entry) { return $false }
+      $stream = $entry.Open()
+      try { return [CodexDshToolkit.NativeIOV131]::EqualStreamFile($stream, $TargetPath) }
+      finally { $stream.Dispose() }
+    } catch { return $false }
+  }
   $pristine = Get-ToolkitPristineFullPath -StateDirectory $StateDirectory -RelativePath $RelativePath
   if ([string]::IsNullOrEmpty($pristine)) { return $false }
   return (Test-ToolkitFileContentEqual -PathA $TargetPath -PathB $pristine)
@@ -865,7 +1076,7 @@ function Move-ToolkitFileAtomic {
 
 function New-ToolkitJsonObject {
   param([hashtable]$Properties)
-  return (New-Object -TypeName psobject -Property $Properties)
+  return [pscustomobject]$Properties
 }
 
 function ConvertTo-ToolkitJson {
@@ -953,62 +1164,12 @@ function Assert-ToolkitJsonNoDuplicateKeys {
     [int]$ExitCode = $script:TKExitBlocked
   )
 
-  $stack = New-Object System.Collections.ArrayList
-  $index = 0
-  $length = ([string]$Text).Length
-  while ($index -lt $length) {
-    $character = $Text[$index]
-    if ($character -eq '{') {
-      [void]$stack.Add(@{ Type = 'object'; Keys = @{}; ExpectKey = $true })
-      $index++
-      continue
-    }
-    if ($character -eq '[') {
-      [void]$stack.Add(@{ Type = 'array'; Keys = $null; ExpectKey = $false })
-      $index++
-      continue
-    }
-    if ($character -eq '}' -or $character -eq ']') {
-      if ($stack.Count -gt 0) { $stack.RemoveAt($stack.Count - 1) }
-      $index++
-      continue
-    }
-    if ($character -eq ',') {
-      if ($stack.Count -gt 0 -and $stack[$stack.Count - 1].Type -eq 'object') {
-        $stack[$stack.Count - 1].ExpectKey = $true
-      }
-      $index++
-      continue
-    }
-    if ($character -eq '"') {
-      $start = $index
-      $index++
-      while ($index -lt $length) {
-        $inner = $Text[$index]
-        if ($inner -eq '\') { $index += 2; continue }
-        if ($inner -eq '"') { break }
-        $index++
-      }
-      $literal = $Text.Substring($start, [Math]::Min($index - $start + 1, $length - $start))
-      $index++
-      $probe = $index
-      while ($probe -lt $length -and [char]::IsWhiteSpace($Text[$probe])) { $probe++ }
-      if ($stack.Count -gt 0 -and $stack[$stack.Count - 1].Type -eq 'object' -and $stack[$stack.Count - 1].ExpectKey -and $probe -lt $length -and $Text[$probe] -eq ':') {
-        $name = ConvertFrom-ToolkitJsonStringLiteral -Literal $literal
-        $context = $stack[$stack.Count - 1]
-        $key = $name.ToLowerInvariant()
-        if ($context.Keys.ContainsKey($key)) {
-          Throw-ToolkitFailure -ExitCode $ExitCode `
-            -Message ($What + ' contains a duplicate key "' + (Get-ToolkitSafeText -Text $name) + '"; the document is ambiguous and is refused.') `
-            -Detail ('key=' + (Get-ToolkitSafeText -Text $name))
-        }
-        $context.Keys[$key] = $true
-        $context.ExpectKey = $false
-      }
-      continue
-    }
-    $index++
+  Initialize-ToolkitNativeIO
+  $duplicate = [CodexDshToolkit.NativeIOV131]::DuplicateKey($Text)
+  if ($null -ne $duplicate) {
+    Throw-ToolkitFailure -ExitCode $ExitCode -Message ($What + ' contains a duplicate key "' + (Get-ToolkitSafeText -Text $duplicate) + '"; the document is ambiguous and is refused.')
   }
+
 }
 
 function Assert-ToolkitJsonArray {
@@ -1254,6 +1415,11 @@ function Read-ToolkitOwnershipManifest {
   $name = [string](Get-ToolkitMember -Object $manifest -Name 'name' -Default '')
   $version = [string](Get-ToolkitMember -Object $manifest -Name 'version' -Default '')
   $installId = [string](Get-ToolkitMember -Object $manifest -Name 'installId' -Default '')
+  $dependencyArchive = [string](Get-ToolkitMember -Object $manifest -Name 'dependencyArchive' -Default '')
+  if ($dependencyArchive -notin @('', 'pristine/dependencies.zip')) {
+    Throw-ToolkitFailure 5 'Dependency baseline archive path is invalid.'
+  }
+  $script:TKDependencyArchiveRegistered = ($dependencyArchive -eq 'pristine/dependencies.zip')
 
   if ($schema -ne $script:TKOwnershipSchema) {
     Throw-ToolkitFailure -ExitCode $script:TKExitManifest -Message 'Ownership manifest schema does not match this toolkit.'
@@ -1274,7 +1440,7 @@ function Read-ToolkitOwnershipManifest {
   $entries = New-Object System.Collections.ArrayList
   foreach ($file in $files) {
     $relative = Assert-ToolkitRelativePath -Path ([string](Get-ToolkitMember -Object $file -Name 'path' -Default ''))
-    Assert-ToolkitPathNotDenied -RelativePath $relative
+    Assert-ToolkitOwnedPath -RelativePath $relative
     if (-not $seen.Add($relative)) {
       Throw-ToolkitFailure -ExitCode $script:TKExitManifest -Message 'Ownership manifest contains duplicate or case-folded duplicate paths.'
     }
@@ -1285,7 +1451,6 @@ function Read-ToolkitOwnershipManifest {
       $pristineRelative = Get-ToolkitPristineRelativePath -RelativePath $relative
     }
     $pristineRelative = Assert-ToolkitRelativePath -Path $pristineRelative
-    Assert-ToolkitPathNotDenied -RelativePath $pristineRelative
     if ($pristineRelative -ne (Get-ToolkitPristineRelativePath -RelativePath $relative)) {
       Throw-ToolkitFailure -ExitCode $script:TKExitManifest -Message 'Ownership manifest pristine reference does not match its managed path.' -Detail ('path=' + (Get-ToolkitSafePath -Path $relative))
     }
@@ -1321,6 +1486,8 @@ function Read-ToolkitOwnershipManifest {
           stateDir     = $locationStateDirectory
           pristineRoot = $locationPristineRoot
         })
+      directories = (Get-ToolkitMember -Object $manifest -Name 'directories' -Default $null)
+      dependencyArchive = $dependencyArchive
       files    = $entries.ToArray()
       path     = [System.IO.Path]::GetFullPath($Path)
     })
@@ -1332,7 +1499,9 @@ function New-ToolkitOwnershipManifest {
     [string]$Version,
     [string]$TargetRoot,
     [object[]]$Files,
-    [string]$ToolkitVersion = ''
+    [string]$ToolkitVersion = '',
+    $Directories = $null,
+    [string]$DependencyArchive = ''
   )
 
   $list = New-Object System.Collections.ArrayList
@@ -1364,6 +1533,8 @@ function New-ToolkitOwnershipManifest {
           pristineRoot = $script:TKPristineDirectoryName
         })
       description  = $description
+      directories  = $Directories
+      dependencyArchive = $DependencyArchive
       fileCount    = $list.Count
       files        = $list.ToArray()
     })
@@ -2372,7 +2543,7 @@ function Get-ToolkitValidatedJournalPath {
   )
 
   $normalized = Assert-ToolkitRelativePath -Path $RelativePath
-  Assert-ToolkitPathNotDenied -RelativePath $normalized
+  Assert-ToolkitOwnedPath -RelativePath $normalized
   if ($null -ne $Seen) {
     $key = $normalized.ToLowerInvariant()
     if ($Seen.ContainsKey($key)) {
@@ -3129,7 +3300,8 @@ function New-ToolkitInstallPlan {
   if ($null -ne $OwnershipManifest) {
     foreach ($file in @($OwnershipManifest.files)) {
       $relative = Assert-ToolkitRelativePath -Path ([string]$file.path)
-      Assert-ToolkitPathNotDenied -RelativePath $relative
+      Assert-ToolkitOwnedPath -RelativePath $relative
+      if (Test-ToolkitDependencyPath $relative) { [void]$newFileRecords.Add(@{path=$relative}); continue }
       if ($releasePaths.Contains($relative)) { continue }
       $destination = Get-ToolkitFullPath -Root $TargetRoot -RelativePath $relative
       Assert-ToolkitNoReparseInPath -Root $TargetRoot -RelativePath $relative
@@ -3506,7 +3678,7 @@ function Invoke-ToolkitInstallAction {
 
     # stage 6: ownership manifest atomic commit (also refreshes location metadata after a move)
     Write-ToolkitProgress -Phase commit
-    $ownership = New-ToolkitOwnershipManifest -InstallId $installId -Version ([string]$releaseManifest.version) -TargetRoot $targetRoot -Files @($plan.NewFiles) -ToolkitVersion ([string]$releaseManifest.version)
+    $ownership = New-ToolkitOwnershipManifest -InstallId $installId -Version ([string]$releaseManifest.version) -TargetRoot $targetRoot -Files @($plan.NewFiles) -ToolkitVersion ([string]$releaseManifest.version) -Directories @(@($plan.CreatedDirectories) + @(Get-ToolkitMember -Object $ownershipManifest -Name 'directories' -Default @()) | Where-Object { $_ } | Sort-Object -Unique) -DependencyArchive ([string](Get-ToolkitMember $ownershipManifest 'dependencyArchive' ''))
     Write-ToolkitJsonAtomic -Object $ownership -Destination $ownershipManifestPath
     $transaction.Journal.state = 'committed'
     Save-ToolkitJournal -Transaction $transaction
@@ -3600,7 +3772,8 @@ function New-ToolkitUninstallPlan {
     [string]$TargetRoot,
     [string]$StateDirectory,
     [object]$OwnershipManifest,
-    [object[]]$ResidualPaths = @()
+    [object[]]$ResidualPaths = @(),
+    [switch]$DependenciesOnly
   )
 
   $deletable = New-Object System.Collections.ArrayList
@@ -3618,7 +3791,8 @@ function New-ToolkitUninstallPlan {
 
   foreach ($file in @($OwnershipManifest.files)) {
     $relative = Assert-ToolkitRelativePath -Path ([string]$file.path)
-    Assert-ToolkitPathNotDenied -RelativePath $relative
+    if ($DependenciesOnly -and -not (Test-ToolkitDependencyPath $relative)) { continue }
+    Assert-ToolkitOwnedPath -RelativePath $relative
     Assert-ToolkitNoReparseInPath -Root $TargetRoot -RelativePath $relative
     $destination = Assert-ToolkitPathInsideRoot -Root $TargetRoot -FullPath (Get-ToolkitFullPath -Root $TargetRoot -RelativePath $relative) -RelativePath $relative
     $item = Get-ToolkitItemOrNull -Path $destination
@@ -3637,6 +3811,7 @@ function New-ToolkitUninstallPlan {
       [void]$retained.Add((New-ToolkitJsonObject -Properties @{ path = $relative; reason = 'not a regular file' }))
       continue
     }
+    Assert-ToolkitNoReparseInPath $StateDirectory (Get-ToolkitPristineRelativePath $relative)
     if (Test-ToolkitPristineMatches -StateDirectory $StateDirectory -RelativePath $relative -TargetPath $destination) {
       [void]$deletable.Add((New-ToolkitJsonObject -Properties @{ path = $relative }))
     }
@@ -3674,6 +3849,16 @@ function New-ToolkitUninstallPlan {
     }
   }
 
+  $removableDirectories = @($directories | Sort-Object -Unique)
+  $recordedDirectories = Get-ToolkitMember -Object $OwnershipManifest -Name 'directories' -Default $null
+  if ($null -ne $recordedDirectories) {
+    $removableDirectories = @($recordedDirectories | Where-Object { $_ -and (-not $DependenciesOnly -or ([string]$_ -eq '.agents/skills/mcp-to-dsh/node_modules') -or (Test-ToolkitDependencyPath ([string]$_))) })
+    foreach ($directory in $removableDirectories) {
+      $checked = Assert-ToolkitRelativePath ([string]$directory)
+      Assert-ToolkitOwnedPath ($checked + '/.probe')
+      Assert-ToolkitNoReparseInPath $TargetRoot ($checked + '/.probe')
+    }
+  }
   return (New-ToolkitJsonObject -Properties @{
       TargetRoot    = $TargetRoot
       Version       = [string]$OwnershipManifest.version
@@ -3681,7 +3866,7 @@ function New-ToolkitUninstallPlan {
       Deletable     = $deletable.ToArray()
       Retained      = $retained.ToArray()
       AlreadyAbsent = $alreadyAbsent.ToArray()
-      Directories   = @($directories | Sort-Object -Unique)
+      Directories   = $removableDirectories
       Untracked     = @($untracked | Sort-Object -Unique)
       JournalPaths  = @($deletable | ForEach-Object { New-ToolkitJsonObject -Properties @{ path = $_.path; action = 'remove' } })
     })
@@ -3698,9 +3883,10 @@ function Show-ToolkitUninstallPlan {
   Write-ToolkitLine ('Mode           : ' + $Mode)
   Write-ToolkitLine ''
   Write-ToolkitLine ('Managed files to delete (ownership proven): ' + @($Plan.Deletable).Count)
-  foreach ($record in @($Plan.Deletable)) {
+  foreach ($record in @($Plan.Deletable | Select-Object -First 40)) {
     Write-ToolkitLine ('  delete   ' + (Get-ToolkitSafePath -Path ([string]$record.path)))
   }
+  if (@($Plan.Deletable).Count -gt 40) { Write-ToolkitLine ('  ... 其余 ' + (@($Plan.Deletable).Count - 40) + ' 个未修改文件也会清理。') }
   Write-ToolkitLine ('Files kept because ownership cannot be proven: ' + @($Plan.Retained).Count)
   foreach ($record in @($Plan.Retained)) {
     Write-ToolkitLine ('  keep     ' + (Get-ToolkitSafePath -Path ([string]$record.path)) + '  (' + [string]$record.reason + ')')
@@ -3725,6 +3911,8 @@ function Show-ToolkitUninstallPlan {
 function Invoke-ToolkitUninstallAction {
   param([hashtable]$Options)
 
+  Write-ToolkitProgress -Phase preflight
+  $dependenciesOnly = [string]$Options.Action -eq 'RemoveDependencies'
   $enginePath = Get-ToolkitEngineSelfPath
   $targetArgument = [string]$Options['Target']
   if ([string]::IsNullOrEmpty($targetArgument)) {
@@ -3735,6 +3923,12 @@ function Invoke-ToolkitUninstallAction {
   }
   $targetRoot = Resolve-ToolkitTargetPath -Path $targetArgument
 
+  Assert-ToolkitMonitorStopped $targetRoot
+  $dependencyRoot = Get-ToolkitFullPath $targetRoot '.agents/skills/mcp-to-dsh/node_modules'
+  if (Test-Path -LiteralPath $dependencyRoot -PathType Container) {
+    Assert-ToolkitNoReparseInPath $targetRoot '.agents/skills/mcp-to-dsh/node_modules/.probe'
+    @(Get-ToolkitDependencyFiles $dependencyRoot) | Out-Null
+  }
   $stateDirectory = Join-Path $targetRoot $script:TKStateDirectory
   $ownershipManifestPath = Join-Path $stateDirectory $script:TKManifestName
   Assert-ToolkitNoReparseInPath -Root $targetRoot -RelativePath $script:TKStateDirectory
@@ -3752,6 +3946,12 @@ function Invoke-ToolkitUninstallAction {
   }
   $ownershipManifest = Read-ToolkitOwnershipManifest -Path $ownershipManifestPath
 
+  if ($dependenciesOnly -and (Test-Path -LiteralPath $dependencyRoot) -and
+      @($ownershipManifest.files | Where-Object { Test-ToolkitDependencyPath $_.path }).Count -eq 0) {
+    Write-ToolkitLine '依赖目录属于旧版或手动安装，缺少安装时的原始内容记录，无法判断是否被修改。已保留 .agents/skills/mcp-to-dsh/node_modules，未删除任何文件。' 'Warn'
+    return $script:TKExitConflict
+  }
+
   $selfPaths = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
   foreach ($selfPath in @([string]$Options['UninstallerSelf'], $enginePath)) {
     if ([string]::IsNullOrEmpty($selfPath)) { continue }
@@ -3762,7 +3962,7 @@ function Invoke-ToolkitUninstallAction {
   # rename a running image but never delete it. Everything else (including the installed
   # engine) goes through the normal quarantine path, where a locked file is restored and
   # reported by the commit hardening instead of being lost.
-  $previewPlan = New-ToolkitUninstallPlan -TargetRoot $targetRoot -StateDirectory $stateDirectory -OwnershipManifest $ownershipManifest -ResidualPaths @([string]$Options['UninstallerSelf'])
+  $previewPlan = New-ToolkitUninstallPlan -TargetRoot $targetRoot -StateDirectory $stateDirectory -OwnershipManifest $ownershipManifest -ResidualPaths @([string]$Options['UninstallerSelf']) -DependenciesOnly:$dependenciesOnly
 
   if ([bool]$Options['PlanOnly']) {
     Show-ToolkitUninstallPlan -Plan $previewPlan -Mode 'uninstall plan (dry run, zero writes)'
@@ -3805,7 +4005,7 @@ function Invoke-ToolkitUninstallAction {
       $ownershipManifest = Read-ToolkitOwnershipManifest -Path $ownershipManifestPath
     }
 
-    $plan = New-ToolkitUninstallPlan -TargetRoot $targetRoot -StateDirectory $stateDirectory -OwnershipManifest $ownershipManifest -ResidualPaths @([string]$Options['UninstallerSelf'])
+    $plan = New-ToolkitUninstallPlan -TargetRoot $targetRoot -StateDirectory $stateDirectory -OwnershipManifest $ownershipManifest -ResidualPaths @([string]$Options['UninstallerSelf']) -DependenciesOnly:$dependenciesOnly
     if ((Get-ToolkitPlanSignature -Plan $plan) -ne $confirmedSignature) {
       Write-ToolkitLine 'The plan changed after recovery; showing the updated plan before deleting.' 'Warn'
       Show-ToolkitUninstallPlan -Plan $plan -Mode 'uninstall (transactional, updated after recovery)'
@@ -3825,6 +4025,7 @@ function Invoke-ToolkitUninstallAction {
     Invoke-ToolkitFaultInjection -Point 'uninstall.after-journal'
 
     $moved = 0
+    Write-ToolkitProgress apply 0 @($plan.Deletable).Count
     foreach ($record in @($plan.Deletable)) {
       $relative = [string]$record.path
       $destination = Get-ToolkitFullPath -Root $targetRoot -RelativePath $relative
@@ -3851,6 +4052,7 @@ function Invoke-ToolkitUninstallAction {
         Throw-ToolkitFailure -ExitCode $script:TKExitTransaction -Message 'A quarantined file does not match the pristine baseline; rolling back.' -Detail ('path=' + (Get-ToolkitSafePath -Path $relative))
       }
       $moved++
+      if ($moved % 25 -eq 0 -or $moved -eq @($plan.Deletable).Count) { Write-ToolkitProgress apply $moved @($plan.Deletable).Count }
       Invoke-ToolkitFaultInjection -Point 'uninstall.after-quarantine-first'
     }
     Invoke-ToolkitFaultInjection -Point 'uninstall.before-commit'
@@ -3930,7 +4132,13 @@ function Invoke-ToolkitUninstallAction {
 
     # Anything we could not delete keeps its original ownership record so a later run can
     # still prove (or refuse) ownership instead of guessing.
+    Write-ToolkitProgress verify 1 1
     $leftovers = New-Object System.Collections.ArrayList
+    if ($dependenciesOnly) {
+      foreach ($record in @($ownershipManifest.files)) {
+        if (-not (Test-ToolkitDependencyPath $record.path)) { [void]$leftovers.Add($record) }
+      }
+    }
     foreach ($record in @($plan.Retained)) {
       [void]$leftovers.Add((New-ToolkitJsonObject -Properties @{ path = [string]$record.path }))
     }
@@ -3946,7 +4154,7 @@ function Invoke-ToolkitUninstallAction {
     }
     if ($leftovers.Count -gt 0) {
       $reduced = New-ToolkitOwnershipManifest -InstallId ([string]$ownershipManifest.installId) -Version ([string]$ownershipManifest.version) `
-        -TargetRoot $targetRoot -Files @($leftovers) -ToolkitVersion ([string]$ownershipManifest.version)
+        -TargetRoot $targetRoot -Files @($leftovers) -ToolkitVersion ([string]$ownershipManifest.version) -Directories $ownershipManifest.directories -DependencyArchive $ownershipManifest.dependencyArchive
       Write-ToolkitJsonAtomic -Object $reduced -Destination $ownershipManifestPath
     }
     elseif (Test-Path -LiteralPath $ownershipManifestPath -PathType Leaf) {
@@ -4040,6 +4248,7 @@ function Invoke-ToolkitUninstallAction {
       # deferred to the finally block: the exclusive lock file is still held right now
       $removeEmptyStateDirectory = $true
     }
+    Write-ToolkitProgress commit 1 1
     return $script:TKExitOk
   }
   catch {
@@ -4052,6 +4261,7 @@ function Invoke-ToolkitUninstallAction {
       return $exitCode
     }
     if ($null -ne $transaction) {
+      Write-ToolkitProgress rollback
       $uninstallRollback = Invoke-ToolkitUninstallRollback -Transaction $transaction -TargetRoot $targetRoot -Plan $plan
       if ([bool]$uninstallRollback.KeepEvidence) { $keepEvidence = $true }
       foreach ($problem in @($uninstallRollback.Problems)) {
@@ -4132,6 +4342,7 @@ function Remove-ToolkitStateEvidenceSubtree {
     [string]$Origin = 'state'
   )
 
+  if ($null -ne $script:TKDependencyArchive) { $script:TKDependencyArchive.Dispose(); $script:TKDependencyArchive = $null }
   $removed = 0
   $preserved = New-Object System.Collections.ArrayList
   $problems = New-Object System.Collections.ArrayList
@@ -4167,6 +4378,10 @@ function Remove-ToolkitStateEvidenceSubtree {
       [void]$preserved.Add($stateRelative)
       [void]$problems.Add('preserved a reparse point under the state directory: ' + (Get-ToolkitSafePath -Path $stateRelative))
       continue
+    }
+    if ($RelativeRoot -eq $script:TKPristineDirectoryName -and $relativeInside -eq 'dependencies.zip' -and $script:TKDependencyArchiveRegistered) {
+      if (@($ReferencedRelativePaths | Where-Object { Test-ToolkitDependencyPath ([string]$_) }).Count -gt 0) { continue }
+      if (@($ProvenRelativePaths | Where-Object { Test-ToolkitDependencyPath ([string]$_) }).Count -gt 0) { [void]$proven.Add($relativeInside) }
     }
     if ($deliberatelyKept.Contains($relativeInside)) {
       # retained on purpose (for example the baseline the reduced ledger references): keep it
@@ -4576,10 +4791,12 @@ function Invoke-ToolkitCommand {
   #>
   param([hashtable]$Options)
 
+  if ($null -ne $script:TKDependencyArchive) { $script:TKDependencyArchive.Dispose(); $script:TKDependencyArchive = $null }
+  $script:TKDependencyArchiveRegistered = $false
   $script:TKOutput = New-Object System.Collections.ArrayList
   $script:TKCollectOutput = $true
   $script:TKQuietOutput = $true
-  $script:TKEmitProgress = [bool]$Options['Progress'] -and ([string]$Options['Action'] -eq 'Install')
+  $script:TKEmitProgress = [bool]$Options['Progress']
   $script:TKNonInteractive = [bool]$Options['NonInteractive']
   $script:TKTestMode = [bool]$Options['TestMode']
   $script:TKTestFaultPoint = [string]$Options['TestFault']
@@ -4605,6 +4822,8 @@ function Invoke-ToolkitCommand {
     switch ([string]$Options['Action']) {
       'Install' { $exitCode = Invoke-ToolkitInstallAction -Options $Options }
       'Uninstall' { $exitCode = Invoke-ToolkitUninstallAction -Options $Options }
+      'RemoveDependencies' { $exitCode = Invoke-ToolkitUninstallAction -Options $Options }
+      'InstallDependencies' { $exitCode = Invoke-ToolkitDependencyInstall -Options $Options }
       default { Throw-ToolkitFailure -ExitCode $script:TKExitUsage -Message ('Unsupported action: ' + [string]$Options['Action']) }
     }
   }
@@ -4613,6 +4832,7 @@ function Invoke-ToolkitCommand {
     [void]$script:TKOutput.Add((Get-ToolkitSafeText -Text ('ERROR: ' + (Get-ToolkitExceptionMessage -Exception $_.Exception))))
   }
   finally {
+    if ($null -ne $script:TKDependencyArchive) { $script:TKDependencyArchive.Dispose(); $script:TKDependencyArchive = $null }
     $script:TKLogEnabled = $false
     $script:TKCollectOutput = $false
     $script:TKQuietOutput = $false
@@ -4654,6 +4874,7 @@ if (-not $Library) {
     Target           = $Target
     PackageRoot      = $PackageRoot
     ReleaseManifest  = $ReleaseManifest
+    DependencySource = $DependencySource
     PlanOnly         = [bool]$PlanOnly
     Yes              = [bool]$Yes
     NonInteractive   = [bool]$NonInteractive

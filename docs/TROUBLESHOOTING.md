@@ -138,7 +138,7 @@ Existing profiles are left untouched, and your user DSH Home is never used as a 
 ## Uninstall kept some files
 
 The plan lists them. Anything reported as `keep` was either modified by you, added by you or
-untracked (for example `node_modules`). This is intentional. If a kept file is a genuine
+untracked (for example dependencies installed manually or by an older release). Dependencies prepared by the current desktop have original-byte records and are removed when unchanged. This is intentional. If a kept file is a genuine
 toolkit leftover, the ledger still lists it together with its pristine baseline, so a later
 uninstall run can remove it once the file is byte-identical to that baseline again.
 
@@ -148,16 +148,9 @@ so the next run can still prove (or refuse) ownership instead of guessing.
 
 ## "Residual (cannot be removed while in use): CodexDshTeamToolkit.Uninstall.exe"
 
-A running EXE cannot delete itself. The uninstaller reports this minimal residual, then
-schedules its own deletion after it exits (a few seconds). Verify the file is gone a moment
-later; if not, delete it manually. The toolkit never recursively deletes a directory to work
-around this.
+A running EXE cannot delete itself. After the uninstall completes, click **Finish** to close the window. A temporary copy of the same engine then checks ownership again and cleans up the executable, its remaining ledger and pristine copies. This may take a few seconds.
 
-Because a minimal residual is still *provable*, the toolkit also keeps a tiny ownership record
-(`.codex-dsh-team-toolkit/manifest.json`) listing it. Once the EXE is gone, either re-run the
-uninstaller from a release package or delete that record by hand — it is the only file left,
-and it is safe to remove at that point. Deleting it earlier would throw away the proof of what
-the toolkit installed, so the toolkit will not do that for you.
+Modified or additional files still remain with the evidence needed to explain their retention. If final cleanup fails because another program holds a file open, close that program and run the uninstaller from the extracted release with `--target <project>`. Do not delete ownership records before checking the retained-file report.
 
 ## Building the thin uninstaller fails
 

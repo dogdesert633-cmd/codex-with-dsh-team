@@ -1,6 +1,6 @@
 # Codex × DSH Team Toolkit
 
-> This branch adds a **v1.3.0 PyQt6 desktop console** for local Monitor discovery, DSH settings,
+> This branch adds a **v1.3.1 PyQt6 desktop console** for local Monitor discovery, DSH settings,
 > synchronization and one team per project. Installation and startup are separate; previous releases remain available through Git tags.
 > See the [desktop guide](desktop/README.md).
 
@@ -54,7 +54,7 @@ report the evidence back to me: <your task>
 
 ## Install (Windows desktop edition)
 
-1. Open the [v1.3.0 release page](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/tag/v1.3.0) and download `codex-dsh-desktop-v1.3.0-windows-x64.zip` under **Assets**.
+1. Open the [v1.3.1 release page](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/tag/v1.3.1) and download `codex-dsh-desktop-v1.3.1-windows-x64.zip` under **Assets**.
 2. **Extract the complete archive** into a convenient tools folder and open `CodexDshDesktop.exe`. Keep its `_internal` and `toolkit` folders alongside it. Python is not required.
 3. Open “配置与模型” (Settings and models) and click “自动查找 DSH 配置” (Find DSH configuration). Confirm the detected default provider and model. Choose among multiple results, or browse manually if nothing is found.
 4. Click “添加项目” (Add project) and choose your project folder. An empty folder works; Git initialization is not required.
@@ -72,7 +72,7 @@ Closing a Codex conversation or browser tab does not stop the background service
 The package installs everything in one pass. Please do not copy Skill folders by hand unless you
 deliberately want only the rules-only part.
 
-1. **Download** the same [v1.3.0 complete desktop archive](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/download/v1.3.0/codex-dsh-desktop-v1.3.0-windows-x64.zip).
+1. **Download** the same [v1.3.1 complete desktop archive](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/download/v1.3.1/codex-dsh-desktop-v1.3.1-windows-x64.zip).
 2. **Extract the whole archive.** The installer needs the complete folder, not just the EXE.
 3. **Open the extracted `toolkit` folder and run `CodexDshTeamToolkit.Install.exe`.** If you prefer a script, run `Install.cmd` from that folder instead.
 4. **Click Browse and choose an existing project folder.** The picker initially opens at the installer's directory; an empty project is fine.
@@ -84,6 +84,8 @@ Afterwards the project contains:
   `.agents/skills/mcp-to-dsh`;
 - `start_dsh_team.cmd` and `sync_dsh_team_config.cmd` in the project root, plus the uninstaller
   `CodexDshTeamToolkit.Uninstall.exe`.
+
+The uninstaller matches the installer's light interface, with progress, logs and completion feedback. Dependencies installed by this version are tracked and removed when unchanged; edited, additional and legacy unrecorded files are preserved and explained. Closing the completed window also cleans up the uninstaller and its remaining ownership records.
 
 Your project's `AGENTS.md` is not modified. To remove it later, run the uninstaller from the project
 root: it removes the files it can confirm were installed by the toolkit, and keeps the files you
@@ -130,7 +132,7 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) and
 - **Run output is not ignored for you.** A run writes `artifacts/dsh-monitor/`,
   `artifacts/dsh-gui-runs/` and `.dsh/contracts/` in the project. The installer never edits your
   `.gitignore`; add those paths yourself before running DSH if you do not want them tracked.
-- **Early version.** v1.3.0 is a pre-release offered for evaluation — feedback and issue reports are
+- **Early version.** v1.3.1 is a pre-release offered for evaluation — feedback and issue reports are
   welcome. Real model calls and some permission scenarios still need more
   validation; see [docs/INSTALLATION.md](docs/INSTALLATION.md) and
   [docs/SECURITY.md](docs/SECURITY.md).

@@ -45,7 +45,14 @@ function Enter-DshWorkspaceLaunch {
     Assert-DshReparseFreePath -Path $lockPath -Label 'Monitor 启动锁' | Out-Null
     $deadline = [DateTime]::UtcNow.AddSeconds(45)
     do {
-        try { return [IO.File]::Open($lockPath, 'OpenOrCreate', 'ReadWrite', 'None') }
+        try {
+            if (Test-Path -LiteralPath $lockPath) {
+                return [IO.File]::Open($lockPath, 'Open', 'ReadWrite', 'None')
+            }
+            # Windows removes a newly created lock when its last handle closes,
+            # including on process failure. Existing files are never adopted/deleted.
+            return New-Object IO.FileStream($lockPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None, 4096, [IO.FileOptions]::DeleteOnClose)
+        }
         catch [IO.IOException] {
             if ([DateTime]::UtcNow -ge $deadline) {
                 throw '此项目正在启动团队，请稍候再试；无需创建另一个团队。'

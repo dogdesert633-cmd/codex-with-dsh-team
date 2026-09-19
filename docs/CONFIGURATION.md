@@ -29,7 +29,8 @@ framework-dependent and run on the .NET Framework 4.x that ships with Windows 10
 
 | Parameter | Default | Meaning |
 | --- | --- | --- |
-| `-Action Install\|Uninstall` | `Install` | operation to perform |
+| `-Action Install\|Uninstall\|InstallDependencies\|RemoveDependencies` | `Install` | install/remove the toolkit, or import/remove its project-local runtime dependencies |
+| `-DependencySource <path>` | off | a freshly prepared dependency tree for `InstallDependencies`; the desktop prepares it separately, records original bytes, then copies files without overwriting an existing tree |
 | `-Target <path>` | folder picker on install; derived from the engine location on uninstall | existing project root (absolute path) |
 | `-PackageRoot <path>` | derived from the engine location | extracted release package root |
 | `-ReleaseManifest <path>` | `<PackageRoot>/release-manifest.json` | explicit release manifest |
@@ -42,7 +43,7 @@ framework-dependent and run on the .NET Framework 4.x that ships with Windows 10
 | `-TeamDshHome <path>` | off | existing toolkit-owned Team Home to adopt (see below) |
 | `-RuntimeRootBase <path>` | `%LOCALAPPDATA%\CodexDshTeam` | base for the owned runtime root |
 | `-InitializeRuntime` | off | create/validate the owned runtime root for this install |
-| `-UninstallerSelf <path>` | off | the in-use EXE path, reported as a minimal residual |
+| `-UninstallerSelf <path>` | off | the in-use EXE path; the graphical uninstaller schedules a second ownership-checked cleanup after closing |
 | `-ClearStaleLock` | off | break the lock **only** when it is provably stale (valid schema/identity + plausible pid + that process gone + ≥10 min). An anomalous lock stays fail-closed |
 | `-TestMode` + `-TestFault <point>` | off | test-only fault injection; refused unless `-TestMode` **and** `CODEX_DSH_TOOLKIT_TEST=1` |
 | `-TestConfirmation <yes\|no>` | off | test-only: inject the interactive confirmation answer (same gate) |
@@ -311,3 +312,5 @@ The managed payload set is **declared**, not discovered:
 location digest), and one `{ path, pristine, state }` entry per managed file, where `pristine`
 is the baseline path of the exact installed bytes. The manifest contains **no checksum, hash or
 digest field**, and never file contents, credentials or an absolute personal path.
+
+Dependency originals are stored in `.codex-dsh-team-toolkit/pristine/dependencies.zip`, declared by `dependencyArchive` in the ownership ledger. Entry names match project-relative dependency paths. Uninstall compares uncompressed bytes directly and retains this archive when modified dependencies remain.

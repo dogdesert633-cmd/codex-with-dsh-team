@@ -3,7 +3,7 @@
   Builds an offline, GitHub-ready release package for the Codex x DSH Team Toolkit.
 
     pwsh -File tools/Build-Release.ps1
-    pwsh -File tools/Build-Release.ps1 -Version 1.3.0
+    pwsh -File tools/Build-Release.ps1 -Version 1.3.1
 
   Guarantees:
     * no network access and no push, ever;
@@ -21,7 +21,7 @@
 [CmdletBinding()]
 param(
   [string]$RepoRoot = '',
-  [string]$Version = '1.3.0',
+  [string]$Version = '1.3.1',
   [string]$OutputDir = '',
   [switch]$SkipZip,
   [switch]$AllowMissingPayload,

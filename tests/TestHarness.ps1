@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
   Shared test harness for the Codex x DSH Team Toolkit.
 
@@ -525,7 +525,8 @@ function New-ToolkitTestPackage {
 
   if (-not $WithoutEngine) {
     $engineSource = Join-Path $Root 'install\Invoke-Toolkit.ps1'
-    Write-ToolkitTestFile -Path $engineSource -Content (Get-Content -LiteralPath $script:TKTestEnginePath -Raw -Encoding UTF8)
+    [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($engineSource)) | Out-Null
+    [IO.File]::Copy($script:TKTestEnginePath, $engineSource, $true)
     [void]$entries.Add((New-ToolkitJsonObject -Properties @{
           path   = '.codex-dsh-team-toolkit/engine/Invoke-Toolkit.ps1'
           source = 'install/Invoke-Toolkit.ps1'

@@ -34,6 +34,75 @@ $script:DshTeamMarkerRequiredFields = @('schema', 'toolkitId', 'installId', 'cre
 
 function Get-DshTeamToolkitId { return $script:DshTeamToolkitId }
 
+# All supported launchers serialize startup for a workspace. The team launcher
+# passes its open handle to the monitor launcher, keeping one lock through sync.
+function Enter-DshWorkspaceLaunch {
+    param([Parameter(Mandatory)][string]$Workspace)
+    $directory = Join-Path $Workspace 'artifacts\dsh-monitor'
+    Assert-DshReparseFreePath -Path $directory -Label 'Monitor 记录目录' | Out-Null
+    [IO.Directory]::CreateDirectory($directory) | Out-Null
+    $lockPath = Join-Path $directory 'launch.lock'
+    Assert-DshReparseFreePath -Path $lockPath -Label 'Monitor 启动锁' | Out-Null
+    $deadline = [DateTime]::UtcNow.AddSeconds(45)
+    do {
+        try { return [IO.File]::Open($lockPath, 'OpenOrCreate', 'ReadWrite', 'None') }
+        catch [IO.IOException] {
+            if ([DateTime]::UtcNow -ge $deadline) {
+                throw '此项目正在启动团队，请稍候再试；无需创建另一个团队。'
+            }
+            Start-Sleep -Milliseconds 200
+        }
+    } while ($true)
+}
+
+function Get-DshWorkspaceMonitor {
+    param([Parameter(Mandatory)][string]$Workspace,
+          [string]$RequestedHome, [string]$RequestedSource, [string]$RequestedProfile)
+    $processes = @(foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name='node.exe'")) {
+        $command = [string]$process.CommandLine
+        $match = [regex]::Match($command, '(?:^|\s)--workspace\s+(?:"([^"]+)"|(\S+))')
+        $scriptMatch = [regex]::Match($command, '(?:^|\s)(?:"([^"]*[\\/]server\.mjs)"|(\S*[\\/]server\.mjs))(?=\s|$)')
+        if (-not $match.Success -or -not $scriptMatch.Success) { continue }
+        $path = if ($match.Groups[1].Success) { $match.Groups[1].Value } else { $match.Groups[2].Value }
+        $scriptPath = if ($scriptMatch.Groups[1].Success) { $scriptMatch.Groups[1].Value } else { $scriptMatch.Groups[2].Value }
+        if (-not [IO.Path]::IsPathRooted($path) -or -not [IO.Path]::IsPathRooted($scriptPath)) { continue }
+        if ([IO.Path]::GetFullPath($path).TrimEnd('\') -eq $Workspace.TrimEnd('\') -and
+            [IO.Path]::GetFullPath($scriptPath) -eq (Join-Path $Workspace '.agents\skills\mcp-to-dsh\src\server.mjs')) {
+            $process
+        }
+    })
+    if ($processes.Count -eq 0) { return $null }
+    if ($processes.Count -gt 1) { throw '此项目已有多个旧版后台，请先在桌面点击“停止后台”，再启动一支团队。' }
+    $record = $null
+    $health = $null
+    try {
+        $record = [IO.File]::ReadAllText((Join-Path $Workspace 'artifacts\dsh-monitor\server.json')) | ConvertFrom-Json
+        $uri = [Uri]$record.url
+        if ($uri.Scheme -eq 'http' -and $uri.Host -eq '127.0.0.1' -and
+            [int]$record.pid -eq [int]$processes[0].ProcessId -and $record.workspace -eq $Workspace) {
+            $health = Invoke-RestMethod -Uri ("http://127.0.0.1:{0}/api/health" -f $uri.Port) -TimeoutSec 2
+        }
+    } catch { $health = $null }
+    if (-not $health -or $health.service -ne 'dsh-team-monitor' -or $health.workspace -ne $Workspace) {
+        throw '此项目的后台仍在运行，但连接记录不可用。请在桌面点击“停止后台”后重新启动；不会另开团队。'
+    }
+    $source = $health.PSObject.Properties['dshUserHome']
+    $profile = $health.PSObject.Properties['dshProfile']
+    $sourcePath = if ($source) { [string]$source.Value } else { '' }
+    $profileName = if ($profile -and $profile.Value) { [string]$profile.Value } else { 'acp' }
+    if (($RequestedHome -and [IO.Path]::GetFullPath($RequestedHome) -ne $health.dshHome) -or
+        ($RequestedSource -and [IO.Path]::GetFullPath($RequestedSource) -ne $sourcePath) -or
+        ($RequestedProfile -and $RequestedProfile -ne $profileName)) {
+        throw '此项目已有一支团队，启动参数与当前后台不同。请先停止后台再切换配置；不会中断现有任务或另开团队。'
+    }
+    # Only public fields leave this helper; the protected token stays in server.json.
+    return [pscustomobject]@{
+        schema_version = 2; status = 'already_running'; url = "http://127.0.0.1:$($uri.Port)"
+        port = $uri.Port; pid = [int]$processes[0].ProcessId; workspace = $Workspace
+        dsh_home = $health.dshHome; dsh_user_home = $sourcePath; dsh_profile = $profileName
+    }
+}
+
 # ---------------------------------------------------------------------------
 # Safe JSON
 # ---------------------------------------------------------------------------
@@ -789,7 +858,7 @@ function Resolve-DshTeamHome {
 
     # 所有 Assert 都必须 Out-Null：函数只允许把结果对象写进 pipeline，否则调用方拿到的
     # 会是一个混杂数组，在 Set-StrictMode 下属性访问会直接失败。
-    Assert-DshReparseFreePath -Path $target -Label $(if ($explicit) { '-TeamDshHome / REMOTE_TO_DSH_HOME' } else { '默认 Team Home 路径' }) | Out-Null
+    Assert-DshReparseFreePath -Path $target -Label $(if ($explicit) { '-TeamDshHome' } else { '默认 Team Home 路径' }) | Out-Null
     Assert-DshTeamHomeOutsideWorkspace -TeamDshHome $target -Workspace $Workspace | Out-Null
 
     $state = Get-DshTeamHomeState -TeamDshHome $target -InstallId $InstallId -ToolkitId $ToolkitId
@@ -1367,4 +1436,106 @@ public static class DshUserHomePicker
             return $null
         } finally { $fallback.Dispose() }
     }
+}
+
+# Start background Node with only explicit log handles: no inherited launcher
+# pipes or startup locks. Literal paths also support Chinese, spaces and brackets.
+function Start-DshMonitorProcess {
+    [CmdletBinding()]
+    param([string]$FilePath, [string[]]$ArgumentList, [string]$WorkingDirectory,
+          [string]$WindowStyle, [string]$RedirectStandardOutput,
+          [string]$RedirectStandardError, [switch]$PassThru)
+    if (-not ('DshMonitorLiteralProcess' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class DshMonitorLiteralProcess {
+    [StructLayout(LayoutKind.Sequential)] struct Security {
+        public int size; public IntPtr descriptor;
+        [MarshalAs(UnmanagedType.Bool)] public bool inherit;
+    }
+    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] struct Startup {
+        public int size; public string reserved, desktop, title;
+        public int x, y, width, height, xChars, yChars, fill, flags;
+        public short show, reservedSize; public IntPtr reserved2, input, output, error;
+    }
+    [StructLayout(LayoutKind.Sequential)] struct Info {
+        public IntPtr process, thread; public int pid, tid;
+    }
+    [StructLayout(LayoutKind.Sequential)] struct StartupEx {
+        public Startup startup; public IntPtr attributes;
+    }
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern bool InitializeProcThreadAttributeList(IntPtr list, int count, int flags, ref IntPtr size);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern bool UpdateProcThreadAttribute(IntPtr list, uint flags, IntPtr attribute,
+        IntPtr value, IntPtr size, IntPtr previous, IntPtr returnedSize);
+    [DllImport("kernel32.dll")] static extern void DeleteProcThreadAttributeList(IntPtr list);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    static extern IntPtr CreateFileW(string name, uint access, uint share, ref Security security,
+                        uint disposition, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool CreateProcessW(string app, StringBuilder command, IntPtr processSecurity,
+        IntPtr threadSecurity, bool inherit, uint flags, IntPtr environment, string cwd,
+        ref StartupEx startup, out Info info);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+    static void Close(IntPtr handle) {
+        if (handle != IntPtr.Zero && handle != new IntPtr(-1)) CloseHandle(handle);
+    }
+    static IntPtr Open(string path, bool input) {
+        Security security = new Security { size=Marshal.SizeOf(typeof(Security)), inherit=true };
+        IntPtr handle = CreateFileW(path, input ? 0x80000000u : 0x40000000u, 3,
+                       ref security, input ? 3u : 2u, 0x80, IntPtr.Zero);
+        if (handle == new IntPtr(-1)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        return handle;
+    }
+    public static Process Start(string app, string args, string cwd, string stdout, string stderr) {
+        StartupEx start = new StartupEx();
+        start.startup = new Startup { size=Marshal.SizeOf(typeof(StartupEx)), flags=0x101, show=0 };
+        Info info = new Info();
+        IntPtr handles = IntPtr.Zero;
+        bool initialized = false;
+        try {
+start.startup.input=Open("NUL", true);
+start.startup.output=Open(stdout, false);
+start.startup.error=Open(stderr, false);
+IntPtr size = IntPtr.Zero;
+InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref size);
+start.attributes = Marshal.AllocHGlobal(size);
+if (!InitializeProcThreadAttributeList(start.attributes, 1, 0, ref size))
+    throw new Win32Exception(Marshal.GetLastWin32Error());
+initialized = true;
+handles = Marshal.AllocHGlobal(3 * IntPtr.Size);
+Marshal.WriteIntPtr(handles, 0, start.startup.input);
+Marshal.WriteIntPtr(handles, IntPtr.Size, start.startup.output);
+Marshal.WriteIntPtr(handles, 2 * IntPtr.Size, start.startup.error);
+// Inherit ONLY the explicit standard handles. Inheriting PowerShell's
+// own output pipe would prevent the desktop from seeing completion.
+if (!UpdateProcThreadAttribute(start.attributes, 0, new IntPtr(0x20002), handles,
+    new IntPtr(3 * IntPtr.Size), IntPtr.Zero, IntPtr.Zero))
+    throw new Win32Exception(Marshal.GetLastWin32Error());
+// No shell, no console; only the Node process inherits these log handles.
+if (!CreateProcessW(app, new StringBuilder("\"" + app + "\" " + args),
+    IntPtr.Zero, IntPtr.Zero, true, 0x08080000, IntPtr.Zero, cwd, ref start, out info))
+    throw new Win32Exception(Marshal.GetLastWin32Error());
+Process process = Process.GetProcessById(info.pid);
+IntPtr retained = process.Handle;
+return process;
+        } finally {
+Close(info.thread); Close(info.process);
+if (initialized) DeleteProcThreadAttributeList(start.attributes);
+if (start.attributes != IntPtr.Zero) Marshal.FreeHGlobal(start.attributes);
+if (handles != IntPtr.Zero) Marshal.FreeHGlobal(handles);
+Close(start.startup.input); Close(start.startup.output); Close(start.startup.error);
+        }
+    }
+}
+'@
+    }
+    $process = [DshMonitorLiteralProcess]::Start($FilePath, ($ArgumentList -join ' '), $WorkingDirectory, $RedirectStandardOutput, $RedirectStandardError)
+    if ($PassThru) { $process } else { $process.Dispose() }
 }

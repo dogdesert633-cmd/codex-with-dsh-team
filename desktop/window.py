@@ -132,6 +132,9 @@ class MainWindow(QMainWindow):
         apply_light_theme(QApplication.instance())
         self.store = store or Store()
         self.snapshots, self.source = {}, None
+        self.preparations, self.checking_projects = {}, set()
+        self._operation_workspace = None
+        self._completion_message = "操作完成，正在更新项目状态。"
         self.workers, self.polling, self.busy = set(), False, False
         self.process, self.queue, self.output_buffer = None, [], ""
         self._model_key = None
@@ -268,13 +271,20 @@ class MainWindow(QMainWindow):
         self.project_path.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         box.addWidget(self.project_title)
         box.addWidget(self.project_path)
-        conversation = QHBoxLayout()
-        self.conversation = label("Codex 对话：尚未关联", "muted")
+        self.conversation = label("一个项目，一支团队。角色与 DSH 会话自动显示，无需关联对话。", "muted")
         self.conversation.setWordWrap(True)
-        conversation.addWidget(self.conversation, 1)
-        self.associate_button = button("关联对话", self.associate_conversation)
-        conversation.addWidget(self.associate_button)
-        box.addLayout(conversation)
+        box.addWidget(self.conversation)
+        self.preparation_status = label("添加项目后自动检查安装状态。", "muted")
+        self.preparation_status.setWordWrap(True)
+        box.addWidget(self.preparation_status)
+        preparation_actions = QHBoxLayout()
+        self.install_button = button("安装工具包与依赖", self.install_dependencies, True)
+        self.uninstall_button = button("卸载依赖", self.uninstall_dependencies)
+        self.check_button = button("重新检查", self.check_project)
+        for control in (self.install_button, self.uninstall_button, self.check_button):
+            preparation_actions.addWidget(control)
+        preparation_actions.addStretch()
+        box.addLayout(preparation_actions)
         connection = QHBoxLayout()
         self.connection = label("●  尚未连接", "tag")
         self.address = label("—", "muted")
@@ -317,6 +327,7 @@ class MainWindow(QMainWindow):
         split.setSizes([210, 740])
         layout.addWidget(split, 1)
         self.add_page(page)
+        page.setMinimumHeight(635)
 
     def add_page(self, page):
         page.setMinimumHeight(515)
@@ -391,7 +402,7 @@ class MainWindow(QMainWindow):
         grid.addWidget(model_card)
         guide, box = card()
         box.addWidget(label("第一次使用？三步就好", "heading"))
-        box.addWidget(label("01  点击“自动查找 DSH 配置”，核对默认模型\n02  添加项目，然后点击“启动 Monitor”\n03  回到 Codex 工作，随时在这里查看状态", "muted"))
+        box.addWidget(label("01  点击“自动查找 DSH 配置”，核对默认模型\n02  添加项目，安装工具包与依赖后启动 Monitor\n03  回到 Codex 工作，随时在这里查看状态", "muted"))
         grid.addWidget(guide)
         grid.addStretch()
         self.add_page(page)
@@ -453,17 +464,19 @@ class MainWindow(QMainWindow):
         usable = online and not state.get("limited") and not self.busy
         self.project_title.setText(project["name"] if project else "添加一个项目，开始连接")
         self.project_path.setText(project["workspace"] if project else "支持已有项目，也支持空白文件夹。")
-        self.conversation.setText("Codex 对话：" + ((project or {}).get("conversationLabel") or "尚未关联"))
-        self.conversation.setToolTip((project or {}).get("conversationId", ""))
         self.address.setText(state.get("url") or "—")
         self.connection.setText(("●  在线 · 概览" if state.get("limited") else "●  在线") if online else ("●  后台仍在运行" if state.get("canStop") else "○  未连接"))
-        self.start_button.setEnabled(bool(project) and not self.busy)
+        workspace = (project or {}).get("workspace")
+        ready = self.preparations.get(workspace, {})
+        self.start_button.setEnabled(bool(project) and not self.busy and (online or ready.get("ready", False)))
         self.start_button.setText("刷新连接" if online else "启动 Monitor")
         self.open_button.setEnabled(online)
         for item in (self.sync_button, self.apply_model, self.follow_default):
             item.setEnabled(usable)
         self.stop_button.setEnabled(bool(project) and not self.busy)
-        self.associate_button.setEnabled(bool(project) and not self.busy)
+        self.update_preparation()
+        if project and workspace not in self.preparations and workspace not in self.checking_projects:
+            self.check_project()
         self.stat_labels[0].setText(str(sum(bool(s.get("online")) for s in self.snapshots.values())))
         self.stat_labels[1].setText(str(sum(s.get("active", 0) for s in self.snapshots.values())))
         rows = state.get("runs", [])
@@ -483,7 +496,9 @@ class MainWindow(QMainWindow):
                 self.table.setItem(i, j, item)
             self.table.setRowHeight(i, 40)
         self.empty.setVisible(not rows)
-        self.empty.setText(state.get("error") or ("暂无任务，详细事件会显示在网页 Monitor 中。" if online else "点击“启动 Monitor”连接所选项目。"))
+        self.empty.setText(state.get("error") or ("暂无任务，详细事件会显示在网页 Monitor 中。" if online
+            else "点击“启动 Monitor”连接所选项目。" if ready.get("ready")
+            else "请先完成上方的安装或更新，再启动项目团队。"))
         settings = state.get("settings") or {}
         effective = settings.get("effective") or {}
         mode = "手动偏好" if settings.get("mode") == "override" else "跟随用户默认"
@@ -513,7 +528,7 @@ class MainWindow(QMainWindow):
         self.model_combo.setEnabled(editable and self.model_combo.count() > 0)
         self.update_model_action()
         self.connect_model.setVisible(bool(project) and not online)
-        self.connect_model.setEnabled(bool(preview) and not self.busy)
+        self.connect_model.setEnabled(bool(preview) and not self.busy and ready.get("ready", False))
         if not project:
             reason = "请先添加并选择一个项目。"
         elif self.busy:
@@ -597,35 +612,116 @@ class MainWindow(QMainWindow):
             self.store.projects.append(project)
             self.fail(str(error))
 
-    def associate_conversation(self):
+    def check_project(self, _checked=False, workspace=None):
         project = self.selected()
-        if not project:
+        workspace = workspace or (project or {}).get("workspace")
+        if not workspace or workspace in self.checking_projects:
             return
-        dialog = QDialog(self)
-        dialog.setWindowTitle("关联 Codex 对话")
-        dialog.setMinimumWidth(460)
-        layout = QFormLayout(dialog)
-        text = label("用一个好认的名称标记所属对话。DSH 会话 ID 会从 Monitor 自动显示。", "muted")
-        text.setWordWrap(True)
-        layout.addRow(text)
-        title, identifier = QLineEdit(project.get("conversationLabel", "")), QLineEdit(project.get("conversationId", ""))
-        title.setPlaceholderText("例如：贪吃蛇项目开发")
-        identifier.setPlaceholderText("可选，由 Codex 启动时传入或手动填写")
-        layout.addRow("对话名称", title)
-        layout.addRow("Codex 对话 ID", identifier)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        layout.addRow(buttons)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            old = dict(project)
-            project.update(conversationLabel=title.text().strip(), conversationId=identifier.text().strip())
+        self.checking_projects.add(workspace)
+        self.update_preparation()
+        def complete(result):
+            self.preparations[workspace] = result
+        def failed(message):
+            self.preparations[workspace] = {"error": message}
+        def done():
+            self.checking_projects.discard(workspace)
+            self.project_changed()
+        self.run_worker(lambda: readiness(workspace), complete, failed, done)
+
+    def update_preparation(self):
+        workspace = (self.selected() or {}).get("workspace")
+        ready = self.preparations.get(workspace, {})
+        checking = workspace in self.checking_projects
+        running = self.state().get("online") or self.state().get("canStop")
+        available = bool(workspace) and not self.busy and not checking and bool(ready) and not ready.get("error")
+        update = ready.get("updateAvailable")
+        needs_toolkit = not ready.get("installed") or update
+        needs_dependencies = not ready.get("dependencies")
+        self.check_button.setEnabled(bool(workspace) and not self.busy and not checking)
+        self.install_button.setEnabled(available and not running and ready.get("nodeReady", False)
+                                       and bool(ready.get("npm")) and (needs_toolkit or needs_dependencies))
+        self.uninstall_button.setEnabled(available and not running and ready.get("dependencyPresent", False))
+        self.install_button.setText("更新工具包" if update and ready.get("installed") and not needs_dependencies
+                                    else "安装工具包与依赖" if needs_toolkit else "安装依赖")
+        if not workspace:
+            message = "添加项目后自动检查安装状态。"
+        elif checking:
+            message = "正在检查项目工具包、DSH 依赖与 Node.js…"
+        elif ready.get("error"):
+            message = ready["error"]
+        elif not ready.get("nodeReady") or not ready.get("npm"):
+            message = "需要 Node.js ≥ 22.19.0（含 npm）。安装后重新打开桌面并点击“重新检查”。"
+        else:
+            toolkit = "工具包待安装" if not ready.get("installed") else "工具包可更新" if update else "工具包已安装"
+            dependencies = "DSH 依赖已安装" if ready.get("dependencies") else "DSH 依赖未安装或不完整"
+            message = f"{toolkit} · {dependencies} · Node {ready.get('nodeVersion', '')}"
+            if running:
+                message += "。安装、更新或卸载前请先停止后台。"
+            elif ready.get("ready"):
+                message += "。可以启动 Monitor。"
+            else:
+                message += "。请先点击安装，完成后再启动 Monitor。"
+        self.preparation_status.setText(message)
+
+    def install_dependencies(self):
+        project = self.selected()
+        if not project or self.busy:
+            return
+        workspace = project["workspace"]
+        self.set_busy(True, "正在检查安装条件")
+        def checked(result):
+            state, ready = result
+            self.preparations[workspace] = ready
+            if state:
+                self.operation_failed("此项目的 Monitor 正在运行，请先停止后台，再安装或更新。")
+                return
+            if ready.get("error") or not ready.get("nodeReady") or not ready.get("npm"):
+                self.operation_failed(ready.get("error") or "需要 Node.js ≥ 22.19.0（含 npm），请安装后重试。")
+                return
             try:
-                self.store.save()
-                self.project_changed()
+                queue = []
+                if not ready["installed"] or ready.get("updateAvailable"):
+                    package = bundled_toolkit()
+                    if not package:
+                        raise DesktopError("未找到随附工具包，请使用完整桌面发行包。")
+                    queue.append(("安装或更新项目工具包", bridge_command("Install", workspace, package=package)))
+                if not ready["dependencies"]:
+                    queue.append(("安装 DSH 依赖（优先复用缓存，缺少时联网下载）", bridge_command("Prepare", workspace, package=bundled_toolkit())))
+                if not queue:
+                    self.operation_done("工具包与依赖已就绪，可以启动 Monitor。")
+                    return
+                detail = "工具包文件使用随附内容，可离线安装。\n"
+                if not ready["dependencies"]:
+                    detail += "DSH 依赖需要通过 npm 下载；本机缓存齐全时优先复用。\n"
+                if QMessageBox.question(self, "安装到所选项目", f"项目：{workspace}\n\n{detail}安装完成后由你点击启动 Monitor。是否继续？") != QMessageBox.StandardButton.Yes:
+                    self.operation_done("已取消安装。")
+                    return
+                self._operation_workspace = workspace
+                self._completion_message = "安装完成。可以点击“启动 Monitor”开始使用。"
+                self.queue = queue
+                self.next_process()
             except DesktopError as error:
-                project.update(old)
-                self.fail(str(error))
+                self.operation_failed(str(error))
+        self.run_worker(lambda: (existing_monitor(workspace), readiness(workspace)), checked, self.operation_failed)
+
+    def uninstall_dependencies(self):
+        project = self.selected()
+        if not project or self.busy:
+            return
+        workspace = project["workspace"]
+        if self.state().get("online") or self.state().get("canStop"):
+            self.fail("请先停止后台，再卸载依赖。")
+            return
+        if QMessageBox.question(self, "卸载项目依赖", f"项目：{workspace}\n\n只移除此项目的 DSH 运行依赖。项目文件、Skill、用户配置和任务记录保留。\n以后使用时可重新安装。是否继续？") != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.queue = [("卸载所选项目的 DSH 依赖", bridge_command("RemoveDependencies", workspace, package=bundled_toolkit()))]
+            self._operation_workspace = workspace
+            self._completion_message = "DSH 依赖已卸载；需要时可以重新安装。"
+            self.set_busy(True, "正在卸载项目依赖")
+            self.next_process()
+        except DesktopError as error:
+            self.operation_failed(str(error))
 
     def load_source(self):
         self.find_source(startup=True)
@@ -724,6 +820,9 @@ class MainWindow(QMainWindow):
         self.progress.setValue(100)
         self.job_label.setText("已完成")
         self.log(message)
+        if self._operation_workspace:
+            self.check_project(workspace=self._operation_workspace)
+            self._operation_workspace = None
         self.refresh()
 
     def operation_failed(self, message):
@@ -731,6 +830,9 @@ class MainWindow(QMainWindow):
         self._stop_targets = []
         self.set_busy(False)
         self.fail(message)
+        if self._operation_workspace:
+            self.check_project(workspace=self._operation_workspace)
+            self._operation_workspace = None
 
     def sync_settings(self):
         project = self.selected()
@@ -793,35 +895,22 @@ class MainWindow(QMainWindow):
         self.run_worker(lambda: existing_monitor(workspace), checked, self.operation_failed)
 
     def prepare_monitor(self, project):
+        # This entry only starts a ready project; installation is a separate action.
         workspace = project["workspace"]
-        ready = readiness(workspace)
-        if not ready["node"]:
-            self.operation_failed("未找到 Node.js。请先安装 Node ≥ 22.19.0，再重新打开控制台。")
-            return
-        try:
-            queue = []
-            package = bundled_toolkit()
-            if not ready["installed"]:
-                if not package:
-                    raise DesktopError("未找到随附工具包，请使用完整桌面发行包。")
-                queue.append(("安装项目工具包", bridge_command("Install", workspace, package=package)))
-            if not ready["dependencies"]:
-                queue.append(("安装项目缺少的 DSH 运行依赖（需要联网）", bridge_command("Prepare", workspace)))
-            queue.append(("同步配置并启动 Monitor", bridge_command("Start", workspace, source=self.source["directory"])))
-            preparation = "项目文件安装使用随附工具包，可离线完成。\n" if not ready["installed"] else ""
-            if not ready["dependencies"]:
-                preparation += "此项目缺少 DSH 运行依赖，将通过 npm 下载并安装；以后依赖齐全时跳过。\n"
-            if len(queue) > 1 and QMessageBox.question(self, "准备项目", preparation + "完成后启动本机 Monitor，不会发起模型任务。是否继续？") != QMessageBox.StandardButton.Yes:
-                self.set_busy(False)
-                self.progress.setRange(0, 100)
-                self.progress.setValue(0)
-                self.job_label.setText("已取消")
+        source = self.source["directory"]
+        def checked(ready):
+            self.preparations[workspace] = ready
+            if not ready.get("ready"):
+                self.operation_failed("项目尚未准备好，请先点击“安装工具包与依赖”，完成后再启动 Monitor。")
                 return
-            self.queue = queue
-            self.set_busy(True, f"正在准备 {project['name']}")
-            self.next_process()
-        except DesktopError as error:
-            self.operation_failed(str(error))
+            try:
+                self._operation_workspace = workspace
+                self._completion_message = "Monitor 已启动，正在连接项目团队。"
+                self.queue = [("同步配置并启动 Monitor", bridge_command("Start", workspace, source=source))]
+                self.next_process()
+            except DesktopError as error:
+                self.operation_failed(str(error))
+        self.run_worker(lambda: readiness(workspace), checked, self.operation_failed)
 
     def stop_monitor(self):
         project = self.selected()
@@ -851,7 +940,8 @@ class MainWindow(QMainWindow):
                 self.snapshots[workspace] = {"online": False, "canStop": False, "active": 0, "runs": [], "url": "",
                                              "error": "后台已停止，日志占用已释放。现在可以删除或移动项目。"}
             self._stop_targets = []
-            self.operation_done("后台已停止，日志占用已释放。" if stopped else "操作完成，正在更新项目状态。")
+            self.operation_done("后台已停止，日志占用已释放。" if stopped else self._completion_message)
+            self._completion_message = "操作完成，正在更新项目状态。"
             if self._closing_after_stop:
                 self._allow_exit = True
                 self._closing_after_stop = False

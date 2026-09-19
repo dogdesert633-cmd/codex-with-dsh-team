@@ -171,6 +171,17 @@ $script:Report.Project = Split-Path -Leaf $workspacePath
 $script:Report.Workspace = $workspacePath
 Write-Ok "Project=$($script:Report.Project)"
 
+$workspaceLaunchLock = Enter-DshWorkspaceLaunch -Workspace $workspacePath
+try {
+$existingMonitor = Get-DshWorkspaceMonitor -Workspace $workspacePath -RequestedHome $TeamDshHome `
+    -RequestedSource $UserDshHome -RequestedProfile $TeamProfile
+if ($existingMonitor) {
+    Write-Ok "Monitor READY (复用已有团队) - $($existingMonitor.url)"
+    Write-Note '同一项目使用一支团队；现有任务保持运行。更新设置请使用桌面或网页的同步配置。'
+    if (-not $NoBrowser) { Start-Process $existingMonitor.url | Out-Null }
+    exit 0
+}
+
 # ---------------------------------------------------------------------------
 # 2. Resolve the runtimes the Team scripts need
 # ---------------------------------------------------------------------------
@@ -222,25 +233,9 @@ if (-not $InstallId) {
 $script:Report.InstallId = $InstallId
 Write-Ok "install id = $InstallId"
 
-# Team 运行时 Home：显式 -TeamDshHome / REMOTE_TO_DSH_HOME，否则默认 owned 路径。
-# 每个候选都经过 Resolve-DshTeamHome：reparse/越界检查 + marker 完整匹配；不符合的候选
-# 直接抛错，不会被静默跳过，也绝不会被 adopt/patch。
-$teamHomeCandidates = New-Object System.Collections.Generic.List[string]
-if ($TeamDshHome) { $teamHomeCandidates.Add($TeamDshHome) }
-foreach ($candidate in @($env:REMOTE_TO_DSH_HOME, [Environment]::GetEnvironmentVariable('REMOTE_TO_DSH_HOME', 'User'),
-        [Environment]::GetEnvironmentVariable('REMOTE_TO_DSH_HOME', 'Machine'))) {
-    if ($candidate) { $teamHomeCandidates.Add($candidate) }
-}
-
-$resolvedTeamHome = $null
-if ($teamHomeCandidates.Count -gt 0) {
-    $resolvedTeamHome = (Resolve-DshTeamHome -Requested $teamHomeCandidates[0] -Workspace $workspacePath `
-            -InstallId $InstallId -TeamHomeRoot $TeamHomeRoot -AllowCreate).TeamDshHome
-}
-else {
-    $resolvedTeamHome = (Resolve-DshTeamHome -Workspace $workspacePath -InstallId $InstallId `
-            -TeamHomeRoot $TeamHomeRoot -AllowCreate).TeamDshHome
-}
+# 用户配置只读；旧 REMOTE_TO_DSH_HOME 不再参与可写运行目录选择。
+$resolvedTeamHome = (Resolve-DshTeamHome -Requested $TeamDshHome -Workspace $workspacePath `
+    -InstallId $InstallId -TeamHomeRoot $TeamHomeRoot -AllowCreate).TeamDshHome
 Assert-UserDshHomeReadOnlySource -UserDshHome $resolvedUserHome -TeamDshHome $resolvedTeamHome | Out-Null
 
 # Team profile：先证明 Team Home 属于本安装（owned），再 prepare（缺失时用官方 DSH 初始化
@@ -368,47 +363,7 @@ else {
 }
 
 # ---------------------------------------------------------------------------
-# 6. If configuration changed, stop only the monitor proven to own this
-# workspace and Team DSH home. The monitor script will then start a fresh one.
-function Stop-OwnedMonitorForConfigRefresh {
-    param(
-        [Parameter(Mandatory)][string]$WorkspacePath,
-        [Parameter(Mandatory)][string]$DshHomePath
-    )
-    $recordPath = Join-Path $WorkspacePath 'artifacts\dsh-monitor\server.json'
-    if (-not (Test-Path -LiteralPath $recordPath -PathType Leaf)) { return }
-    $record = Get-Content -Raw -LiteralPath $recordPath | ConvertFrom-Json
-    if (-not $record.workspace -or -not $record.dsh_home -or -not $record.pid -or -not $record.url) { return }
-    $uri = [Uri]$record.url
-    $health = $null
-    try { $health = Invoke-RestMethod -Uri ("http://127.0.0.1:{0}/api/health" -f $uri.Port) -TimeoutSec 1 } catch { return }
-    if ($health.service -ne 'dsh-team-monitor' -or
-        $health.workspace -ne $WorkspacePath -or
-        $health.dshHome -ne $DshHomePath) { return }
-    $monitorPid = [int]$record.pid
-    $process = Get-Process -Id $monitorPid -ErrorAction SilentlyContinue
-    if (-not $process -or $process.HasExited) { return }
-    # PID is accepted only when the process is the recorded local monitor;
-    # ownership is established by the health response above and exact PID.
-    Stop-Process -Id $monitorPid -Force -ErrorAction Stop
-    Write-Note '检测到配置变化，已仅刷新当前 workspace 的 Monitor。'
-}
-
-$sourceChanged = $false
-$previousRecordPath = Join-Path $workspacePath 'artifacts\dsh-monitor\server.json'
-if (Test-Path -LiteralPath $previousRecordPath -PathType Leaf) {
-    try {
-        $previousRecord = [IO.File]::ReadAllText($previousRecordPath) | ConvertFrom-Json
-        $previousSource = $previousRecord.PSObject.Properties['dsh_user_home']
-        $sourceChanged = -not $previousSource -or [string]$previousSource.Value -ne $resolvedUserHome
-    } catch { $sourceChanged = $false }
-}
-if ($sourceChanged -or (-not $SkipSync -and $syncResult -and @($syncResult.Changed).Count -gt 0)) {
-    Stop-OwnedMonitorForConfigRefresh -WorkspacePath $workspacePath -DshHomePath $resolvedTeamHome
-}
-
-# 7. Start or reuse this project's monitor, then open it
-# ---------------------------------------------------------------------------
+# 6. Start this project's monitor while keeping the workspace launch lock.
 Write-Step '启动或复用本项目的 DSH Monitor'
 # 主 DSH Home 与 Team Home 一起透传：Team Home 继续是 dispatch 运行时的 dshHome，主 Home 只作为
 # Monitor「一键同步设置」按钮的来源。两者相同就没有可同步的两个 Home，直接拒绝而不是悄悄丢失按钮。
@@ -418,6 +373,7 @@ if ($resolvedUserHome -eq $resolvedTeamHome) {
 $monitorArgs = @{
     Workspace   = $workspacePath
     Port        = $Port
+    WorkspaceLaunchLock = $workspaceLaunchLock
     AutoPort    = $true
     Background  = $true
     DshHome     = $resolvedTeamHome
@@ -463,3 +419,6 @@ Write-EnvironmentReport
 Write-Host 'DSH READY / Monitor READY - 可以开始 Codex x DSH Team 工作。' -ForegroundColor Green
 Write-Host '（本窗口可以直接关闭；Monitor 在后台继续运行。）' -ForegroundColor DarkGray
 exit 0
+} finally {
+    $workspaceLaunchLock.Dispose()
+}

@@ -24,12 +24,14 @@ DSH home 解析分两个角色，二者不可互换：
    交互启动找不到配置时弹出文件夹浏览器，选择含 `settings.yaml` 的目录即可，位置保存在
    当前用户的 Toolkit 本地状态中。启动时同步，派发前检查配置变化；默认模型读取用户主配置，
    不使用列表第一项或开发者设置。同步失败不派发。任何代码路径都不得写入用户源目录。
-2. **Team Home（唯一可写运行时）**：`-TeamDshHome` / `REMOTE_TO_DSH_HOME`，
-   否则默认 `%LOCALAPPDATA%\CodexDshTeam\runtimes\<toolkit-install-id>\`
+2. **Team Home（唯一可写运行时）**：启动器自动使用
+   `%LOCALAPPDATA%\CodexDshTeam\runtimes\<toolkit-install-id>\`
    （`install id` 来自 `%LOCALAPPDATA%\CodexDshTeam\install.json`）。
    它必须带合法 marker `.codex-dsh-team-home.json`
    （`schema` / `toolkitId` / `installId` / `createdAt` / `purpose`）；
    无 marker、marker 属于别的 install、或看起来只是普通 DSH Home，一律**停止**，绝不 adopt/patch。
+   只有明确需要自定义运行目录时才传 `-TeamDshHome`（低层入口为 `-DshHome`）；普通使用省略即可。
+   两个启动入口均忽略旧 `REMOTE_TO_DSH_HOME`，不再将其作为写入目标。
 
 不要输出 credential 值。
 
@@ -68,13 +70,11 @@ Coordinator 管理端口和网页：
 $workspace = (Resolve-Path '.').Path
 $skillRoot = Join-Path $workspace '.agents\skills\mcp-to-dsh'
 
-& (Join-Path $skillRoot 'scripts\start_dsh_monitor.ps1') `
+& (Join-Path $skillRoot 'scripts\start_dsh_team.ps1') `
   -Workspace $workspace `
-  -Port 4317 `
-  -AutoPort `
-  -Background `
-  -TeamHomeRoot (Join-Path $env:LOCALAPPDATA 'CodexDshTeam\runtimes') `
-  -OpenBrowser
+  -NonInteractive `
+  -NoBrowser `
+  -SkipDshCheck
 ```
 
 `-DshHome` 仍指向 Team 运行时 Home，但必须是 Toolkit-owned（带合法 marker）。`-UserDshHome`
@@ -82,6 +82,14 @@ $skillRoot = Join-Path $workspace '.agents\skills\mcp-to-dsh'
 `access_token_protected`，**没有** 明文 `access_token`。
 
 用户不需要记忆实际端口。后续 dispatch 从 workspace 的 monitor record 复用实际 URL。每个新的 Coordinator 对话第一次实际使用 DSH 时，必须再次向用户声明解析出的实际 URL。
+
+同一项目只运行一支团队；重复启动先复用已验证的后台，不重新同步或中断现有任务。
+团队中可并行多个 Agent / DSH session，不需要手动关联 Codex 对话。同一项目多个 Codex
+对话会共享该团队，协调任务时应避免重复派发。显式配置与现有后台不同、记录缺失但进程仍在运行时，
+先在桌面停止后台再启动，不创建第二个 Monitor。已有后台可用桌面或网页“同步配置”更新设置。
+
+启动不会安装依赖。桌面先点击“安装工具包与依赖”；命令行安装使用上面的 `npm ci`。
+`-SkipDshCheck` 只跳过启动时的付费模型试请求，不代表模型连通性已经验证。
 
 ### 配置与故障排查（v1.0）
 

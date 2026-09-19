@@ -53,6 +53,11 @@ def smoke_window(output):
 
     def finish():
         try:
+            workspace = str(project.resolve())
+            window.preparations[workspace] = {"ready": True, "installed": True, "dependencies": True,
+                "dependencyPresent": True, "nodeReady": True, "npm": "npm.cmd", "nodeVersion": "v24.16.0"}
+            window.project_changed()
+            QApplication.processEvents()
             assert window.table.rowCount() == 2
             assert window.connection.text() == "●  在线"
             assert window.stat_labels[1].text() == "1"
@@ -67,6 +72,13 @@ def smoke_window(output):
             window.project_changed()
             QApplication.processEvents()
             assert window.grab().save(str(output / "desktop-model-preview.png"))
+            window.show_page(0)
+            window.preparations[workspace].update(ready=False, dependencies=False, dependencyPresent=False)
+            window.reload_projects()
+            QApplication.processEvents()
+            assert window.install_button.isEnabled()
+            assert not window.start_button.isEnabled()
+            assert window.grab().save(str(output / "desktop-installation.png"))
             dialog = QInputDialog(window)
             dialog.setWindowTitle("选择 DSH 配置")
             dialog.setLabelText("发现以下可用配置，请选择：")

@@ -1,8 +1,10 @@
 # Installation
 
-> **v1.1.0.** Download the **complete package ZIP** — `codex-dsh-team-toolkit-v1.1.0.zip` — from
-> [releases/tag/v1.1.0](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/tag/v1.1.0),
-> extract it completely, run the installer, pick your existing project root and confirm.
+> **v1.3.0.** Download the **complete desktop ZIP** — `codex-dsh-desktop-v1.3.0-windows-x64.zip` — from
+> [releases/tag/v1.3.0](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/tag/v1.3.0),
+> extract it completely and open `CodexDshDesktop.exe`. Add a project, install the toolkit and
+> dependencies using the installation button, then start Monitor. For the file-only installer,
+> open the bundled `toolkit` directory; the instructions below describe that separate option.
 > Installation needs no administrator rights and installs no Node dependencies.
 > Take the ZIP asset attached to the release, **not** the automatically generated "Source code"
 > archive: the installer needs the whole package tree, not just the sources.
@@ -25,10 +27,10 @@ The installer engine needs no administrator rights, no network access and no pac
 
 One run installs all three Skills into an existing project:
 
-1. **Download the release ZIP.** Use the `codex-dsh-team-toolkit-v1.1.0.zip` asset attached to the
-   [v1.1.0 release](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/tag/v1.1.0)
+1. **Download the release ZIP.** Use the `codex-dsh-desktop-v1.3.0-windows-x64.zip` asset attached to the
+   [v1.3.0 release](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/tag/v1.3.0)
    (or a `dist/` zip built by a maintainer).
-2. **Extract it completely.** The installer needs the whole package tree, not just the EXE.
+2. **Extract it completely and open the bundled `toolkit` directory.** The installer needs the whole package tree, not just the EXE.
 3. **Run `CodexDshTeamToolkit.Install.exe`** in the package root — the normal GUI entry — or
    `Install.cmd` if you prefer the zero-dependency script.
 4. **Click Browse and pick your existing project root.** The picker starts from the EXE directory.
@@ -261,8 +263,8 @@ the EXEs from an extracted package.
 ```powershell
 pwsh -File installer/Build-Installer.ps1                     # installer EXE (needs in-box csc.exe)
 pwsh -File uninstaller/Build-Uninstaller.ps1                 # thin EXE (needs in-box csc.exe)
-pwsh -File tools/Build-Release.ps1 -Version 1.1.0            # dist/ package + zip (no checksum artefact)
-pwsh -File tools/Verify-Release.ps1 -Package dist/codex-dsh-team-toolkit-v1.1.0.zip
+pwsh -File tools/Build-Release.ps1 -Version 1.3.0            # dist/ package + zip (no checksum artefact)
+pwsh -File tools/Verify-Release.ps1 -Package dist/codex-dsh-team-toolkit-v1.3.0.zip
 ```
 
 The build is offline and never pushes anywhere. Useful properties:
@@ -279,7 +281,7 @@ The build is offline and never pushes anywhere. Useful properties:
   explicitly — the use is printed in the build output and recorded in `dist/build-report.json`:
 
   ```powershell
-  pwsh -File tools/Build-Release.ps1 -Version 1.1.0 `
+  pwsh -File tools/Build-Release.ps1 -Version 1.3.0 `
     -ContentScanAllowlist '.agents/skills/mcp-to-dsh/test/redaction.test.mjs'
   ```
 

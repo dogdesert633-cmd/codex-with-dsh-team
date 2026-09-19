@@ -1,4 +1,4 @@
-"""Build an additive desktop distribution; do not modify the legacy toolkit sources."""
+"""Build a desktop distribution from a complete versioned toolkit package."""
 import argparse
 from importlib.metadata import distribution
 import json

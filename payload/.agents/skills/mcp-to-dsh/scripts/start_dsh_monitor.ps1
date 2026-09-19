@@ -21,7 +21,8 @@
     [ValidateRange(1, 200)]
     [int]$PortSearchSpan = 50,
     [switch]$NonInteractive,
-    [switch]$OpenBrowser
+    [switch]$OpenBrowser,
+    [System.IO.FileStream]$WorkspaceLaunchLock
 )
 
 Set-StrictMode -Version Latest
@@ -49,14 +50,27 @@ $profileArgs = @('--dsh-profile', $profileName)
 $profileArgument = " --dsh-profile `"$profileName`""
 
 $workspacePath = (Resolve-Path -LiteralPath $Workspace).Path
+$ownsLaunchLock = $null -eq $WorkspaceLaunchLock
+if ($ownsLaunchLock) { $WorkspaceLaunchLock = Enter-DshWorkspaceLaunch -Workspace $workspacePath }
+elseif (-not $WorkspaceLaunchLock.CanWrite -or
+    $WorkspaceLaunchLock.Name -ne (Join-Path $workspacePath 'artifacts\dsh-monitor\launch.lock')) {
+    throw 'Monitor 启动锁与当前项目不匹配。'
+}
+try {
+$existingMonitor = Get-DshWorkspaceMonitor -Workspace $workspacePath -RequestedHome $DshHome `
+    -RequestedSource $UserDshHome -RequestedProfile $TeamProfile
+if ($existingMonitor) {
+    if ($OpenBrowser) { Start-Process $existingMonitor.url | Out-Null }
+    Write-Output (ConvertTo-SafeJson -InputObject $existingMonitor -Depth 6)
+    exit 0
+}
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $bundleRoot = Split-Path -Parent $scriptRoot
 $serverPath = Join-Path $bundleRoot 'src\server.mjs'
 $node = Get-Command node.exe -ErrorAction Stop
 $npm = Get-Command npm.cmd -ErrorAction Stop
-if (-not (Test-Path -LiteralPath (Join-Path $bundleRoot 'node_modules'))) {
-    & $npm.Source ci --prefix $bundleRoot | Out-Host
-    if ($LASTEXITCODE -ne 0) { throw "npm ci failed: $LASTEXITCODE" }
+if (-not (Test-Path -LiteralPath (Join-Path $bundleRoot 'node_modules\@deepseek-ai\dsh\lib\bin.js') -PathType Leaf)) {
+    throw '项目尚未安装 DSH 依赖，请在桌面点击“安装工具包与依赖”，完成后再启动 Monitor。'
 }
 
 # 稳定安装身份：位于项目/Git 之外，项目移动后仍能定位同一个 owned runtime。
@@ -65,14 +79,8 @@ if (-not $InstallId) {
     $InstallId = $identity.InstallId
 }
 
-# Team 运行时 Home：显式参数 / REMOTE_TO_DSH_HOME，否则默认 owned 路径。
-# Resolve-DshTeamHome 先做 reparse 与 workspace 越界检查，再按 marker 判定 ownership：
-# 无 marker 的已有目录绝不被 adopt/patch。
-$teamHomeCandidate = $DshHome
-if (-not $teamHomeCandidate) { $teamHomeCandidate = $env:REMOTE_TO_DSH_HOME }
-if (-not $teamHomeCandidate) { $teamHomeCandidate = [Environment]::GetEnvironmentVariable('REMOTE_TO_DSH_HOME', 'User') }
-if (-not $teamHomeCandidate) { $teamHomeCandidate = [Environment]::GetEnvironmentVariable('REMOTE_TO_DSH_HOME', 'Machine') }
-$resolvedTeam = Resolve-DshTeamHome -Requested $teamHomeCandidate -Workspace $workspacePath `
+# 默认受管运行目录与只读用户配置分开，不读取旧 REMOTE_TO_DSH_HOME。
+$resolvedTeam = Resolve-DshTeamHome -Requested $DshHome -Workspace $workspacePath `
     -InstallId $InstallId -TeamHomeRoot $TeamHomeRoot -AllowCreate
 $dshHomePath = $resolvedTeam.TeamDshHome
 
@@ -223,7 +231,7 @@ function New-MonitorTokenRecord {
 # the stable ownership key.
 if (Test-Path -LiteralPath $recordPath -PathType Leaf) {
     try {
-        $existingRecord = Get-Content -Raw -LiteralPath $recordPath | ConvertFrom-Json
+        $existingRecord = [IO.File]::ReadAllText($recordPath) | ConvertFrom-Json
         if ($existingRecord.url) {
             $existingUri = [Uri]$existingRecord.url
             $existingPort = $existingUri.Port
@@ -321,7 +329,7 @@ $monitorToken = New-MonitorToken
 $stdoutPath = Join-Path $artifactDir 'server-stdout.log'
 $stderrPath = Join-Path $artifactDir 'server-stderr.log'
 $argumentLine = "`"$serverPath`" --workspace `"$workspacePath`" --port $selectedPort --token $monitorToken --dsh-home `"$dshHomePath`" --toolkit-install-id `"$InstallId`"$profileArgument$userHomeArgument"
-$process = Start-Process -FilePath $node.Source -ArgumentList $argumentLine -WorkingDirectory $workspacePath -WindowStyle Hidden -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -PassThru
+$process = Start-DshMonitorProcess -FilePath $node.Source -ArgumentList $argumentLine -WorkingDirectory $workspacePath -WindowStyle Hidden -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -PassThru
 
 $ready = $false
 for ($attempt = 0; $attempt -lt 40; $attempt++) {
@@ -348,3 +356,6 @@ $record = New-MonitorTokenRecord -Status 'running' -Url $url -ActualPort $select
 Write-DshAtomicText -Path $recordPath -Text ((ConvertTo-SafeJson -InputObject $record -Depth 6) + "`n") -RestrictToCurrentUser | Out-Null
 Open-MonitorPage -Url $url
 Write-PublicRecord -Status 'running' -Url $url -ActualPort $selectedPort -MonitorPid ([Nullable[int]]$process.Id) -StartUtc $record.start_utc
+} finally {
+    if ($ownsLaunchLock) { $WorkspaceLaunchLock.Dispose() }
+}

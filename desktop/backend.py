@@ -395,11 +395,50 @@ def safe_log(text):
 
 
 def readiness(workspace):
-    root = Path(workspace) / ".agents/skills/mcp-to-dsh"
-    return {"installed": (root / "scripts/start_dsh_team.ps1").is_file(),
-            "dependencies": (root / "node_modules/@deepseek-ai/dsh/lib/bin.js").is_file(),
-            "node": shutil.which("node.exe") or shutil.which("node") or "",
-            "globalDsh": shutil.which("dsh.cmd") or shutil.which("dsh") or ""}
+    workspace = Path(workspace)
+    root = workspace / ".agents/skills/mcp-to-dsh"
+    modules = root / "node_modules"
+    files = ("package.json", "package-lock.json", "SKILL.md", "scripts/start_dsh_team.ps1",
+             "scripts/start_dsh_monitor.ps1", "scripts/DshTeamCommon.ps1", "scripts/Sync-DshTeamConfig.ps1",
+             "src/server.mjs", "src/model-settings.mjs", "src/security.mjs", "src/team-home.mjs")
+    missing = [name for name in files if not (root / name).is_file()]
+    for skill in ("codex-team", "dsh-role-boundaries"):
+        if not (root.parent / skill / "SKILL.md").is_file():
+            missing.append(skill + "/SKILL.md")
+    required = ("@deepseek-ai/dsh", "@agentclientprotocol/sdk", "@earendil-works/pi-ai", "yaml", "zod")
+    dependencies_missing = [name for name in required if not (modules / name / "package.json").is_file()]
+    if not (modules / "@deepseek-ai/dsh/lib/bin.js").is_file():
+        dependencies_missing.append("DSH 运行入口")
+    node = shutil.which("node.exe") or shutil.which("node") or ""
+    version, node_ready = "", False
+    if node:
+        try:
+            result = subprocess.run([node, "--version"], capture_output=True, timeout=5,
+                                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            match = re.fullmatch(rb"v(\d+)\.(\d+)\.(\d+)", result.stdout.strip())
+            if result.returncode == 0 and match:
+                version = match[0].decode("ascii")
+                node_ready = tuple(map(int, match.groups())) >= (22, 19, 0)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    def version_at(path):
+        try:
+            return str(read_json(path).get("version", ""))
+        except DesktopError:
+            return ""
+    installed_version = version_at(workspace / ".codex-dsh-team-toolkit/manifest.json")
+    package = bundled_toolkit()
+    bundled_version = version_at(package / "release-manifest.json") if package else ""
+    def semver(value):
+        return tuple(map(int, value.split("."))) if re.fullmatch(r"\d+\.\d+\.\d+", value) else (0, 0, 0)
+    update = bool(bundled_version and semver(bundled_version) > semver(installed_version))
+    return {"installed": not missing, "toolkitMissing": missing,
+            "installedVersion": installed_version, "bundledVersion": bundled_version, "updateAvailable": update,
+            "dependencies": not dependencies_missing, "dependencyMissing": dependencies_missing,
+            "dependencyPresent": modules.exists(), "node": node, "nodeVersion": version, "nodeReady": node_ready,
+            "npm": shutil.which("npm.cmd") or "", "ready": not missing and not dependencies_missing and node_ready and not update,
+            "globalDsh": shutil.which("dsh.cmd") or shutil.which("dsh") or "",
+            "error": "" if workspace.is_dir() else "项目目录不存在，请重新选择。"}
 
 
 def existing_monitor(workspace):

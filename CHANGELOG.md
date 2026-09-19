@@ -19,10 +19,8 @@ version is offered for evaluation rather than as a finished product.
   (`CodexDshTeamToolkit.Install.exe` or `Install.cmd`) writes all three Skills into an existing
   project's `.agents/skills/` in one pass, together with the project-root launchers and the thin
   uninstaller; everything is declared by the package inventory and tracked in the ownership ledger.
-- **Replaced the older mixed team skill.** The previous single `codex-dsh-team` skill is gone.
-  Upgrades do **not** remove it automatically — the installer keeps it as `retained`, so migrate by
-  uninstalling the old managed files first; see
-  [docs/INSTALLATION.md](docs/INSTALLATION.md#migrating-from-the-older-mixed-team-skill).
+- **Replaced the older mixed team skill.** The previous single `codex-dsh-team` skill is no longer
+  part of the payload; this release ships and installs the three independent skills instead.
 - **Bilingual documentation.** `README.md` (English) and `README.zh-CN.md` (Chinese) are kept in
   step and cross-linked, and the `docs/` set covers installation, configuration, security and
   troubleshooting.

@@ -8,11 +8,12 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QTimer, Qt
+from PyQt6.QtGui import QPalette, QColor
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QMessageBox
+from PyQt6.QtWidgets import QApplication, QMessageBox, QInputDialog, QFileDialog
 import backend
-from window import MainWindow
+from window import MainWindow, apply_light_theme
 from test_backend import source_at
 
 
@@ -81,6 +82,122 @@ class WindowTests(unittest.TestCase):
         for item in (self.window.sync_button, self.window.apply_model, self.window.follow_default):
             self.assertFalse(item.isEnabled())
         self.assertIn("概览", self.window.connection.text())
+        self.assertIn("旧版", self.window.model_status.text())
+
+    def test_offline_model_preview_explains_connection_and_never_saves_to_monitor(self):
+        self.window.display_source(backend.read_source(source_at(self.root / "source")))
+        self.assertEqual(self.window.provider_combo.currentData(), "chosen-provider")
+        self.assertEqual(self.window.model_combo.currentData(), "chosen-model")
+        self.assertTrue(self.window.provider_combo.isEnabled())
+        self.assertFalse(self.window.apply_model.isEnabled())
+        self.assertFalse(self.window.follow_default.isEnabled())
+        self.assertFalse(self.window.connect_model.isHidden())
+        self.assertIn("预览", self.window.model_status.text())
+        self.window.provider_combo.setCurrentIndex(0)
+        with patch("window.MonitorClient") as client:
+            self.window.save_model()
+            client.assert_not_called()
+        self.connected()
+        self.assertTrue(self.window.apply_model.isEnabled())
+        self.assertEqual(self.window.provider_combo.currentData(), "p")
+        self.assertTrue(self.window.connect_model.isHidden())
+
+    def test_auto_search_one_result_remembers_default_without_dialog_and_is_responsive(self):
+        row = dict(backend.read_source(source_at(self.root / "source")), source="DSH_HOME")
+        original = (Path(row["directory"]) / "settings.yaml").read_bytes()
+        beats = []
+        timer = QTimer()
+        timer.setInterval(15)
+        timer.timeout.connect(lambda: beats.append(1))
+        timer.start()
+        def candidates():
+            time.sleep(.22)
+            return [row]
+        with patch.object(self.store, "candidates", side_effect=candidates) as search, patch("window.QInputDialog.getItem") as dialog:
+            self.window.find_source()
+            self.window.find_source()
+            self.assertFalse(self.window.detect_source.isEnabled())
+            self.wait_until(lambda: not self.window.searching_source)
+            self.assertEqual(search.call_count, 1)
+            dialog.assert_not_called()
+        timer.stop()
+        self.assertGreater(len(beats), 3)
+        self.assertEqual(self.store.saved_source(), row["directory"])
+        self.assertEqual(self.window.source["model"], "chosen-model")
+        self.assertEqual(original, (Path(row["directory"]) / "settings.yaml").read_bytes())
+        self.assertTrue(self.window.detect_source.property("primary"))
+        self.assertFalse(self.window.browse_source.property("primary"))
+
+    def test_multiple_sources_require_selection_and_cancellation_preserves_saved_choice(self):
+        first = dict(backend.read_source(source_at(self.root / "first")), source="DSH_HOME")
+        second = dict(backend.read_source(source_at(self.root / "second")), source="用户默认目录")
+        def choose(_parent, _title, _prompt, options, *_):
+            self.assertIn("chosen-provider / chosen-model", options[1])
+            return options[1], True
+        with patch.object(self.store, "candidates", return_value=[first, second]), patch("window.QInputDialog.getItem", side_effect=choose):
+            self.window.find_source()
+            self.wait_until(lambda: not self.window.searching_source)
+        self.assertEqual(self.store.saved_source(), second["directory"])
+        with patch.object(self.store, "candidates", return_value=[first, second]), patch("window.QInputDialog.getItem", return_value=("", False)):
+            self.window.find_source()
+            self.wait_until(lambda: not self.window.searching_source)
+        self.assertEqual(self.store.saved_source(), second["directory"])
+
+    def test_no_source_and_ambiguous_startup_guide_user_without_opening_browser(self):
+        row = dict(backend.read_source(source_at(self.root / "source")), source="DSH_HOME")
+        with patch.object(self.store, "candidates", return_value=[]), patch("window.QFileDialog.getExistingDirectory") as browse:
+            self.window.find_source()
+            self.wait_until(lambda: not self.window.searching_source)
+            self.assertIn("手动选择目录", self.window.source_status.text())
+            browse.assert_not_called()
+        with patch.object(self.store, "candidates", return_value=[row, dict(row, directory="other")]), patch("window.QInputDialog.getItem") as dialog:
+            self.window.load_source()
+            self.wait_until(lambda: not self.window.searching_source)
+            dialog.assert_not_called()
+        self.assertIsNone(self.window.source)
+        self.assertIsNone(self.store.saved_source())
+
+    def test_startup_does_not_replace_broken_saved_source(self):
+        saved = dict(directory=str(self.root / "missing"), source="上次选择", error="配置已移动", provider="", model="")
+        valid = dict(backend.read_source(source_at(self.root / "source")), source="DSH_HOME")
+        with patch.object(self.store, "candidates", return_value=[saved, valid]), patch.object(self.store, "set_source") as save:
+            self.window.load_source()
+            self.wait_until(lambda: not self.window.searching_source)
+            save.assert_not_called()
+        self.assertTrue(self.window.source["error"])
+        self.assertIn("尚未切换", self.window.source_status.text())
+
+    def test_all_dialogs_use_white_background_even_with_dark_system_palette(self):
+        dark = QPalette()
+        dark.setColor(QPalette.ColorRole.Window, QColor("#202020"))
+        APP.setPalette(dark)
+        APP.styleHints().setColorScheme(Qt.ColorScheme.Dark)
+        apply_light_theme(APP)
+        for dialog in (QInputDialog(self.window), QMessageBox(self.window), QFileDialog(self.window)):
+            if isinstance(dialog, QFileDialog):
+                dialog.setOption(QFileDialog.Option.DontUseNativeDialog)
+            dialog.show()
+            QTest.qWait(20)
+            self.assertEqual(dialog.palette().color(QPalette.ColorRole.Window).name(), "#ffffff")
+            corner = dialog.grab().toImage().pixelColor(3, 3)
+            self.assertGreater(min(corner.red(), corner.green(), corner.blue()), 240)
+            dialog.close()
+            dialog.deleteLater()
+
+    def test_preparation_skips_installed_dependencies_and_explains_download_when_missing(self):
+        self.window.display_source(backend.read_source(source_at(self.root / "source")))
+        ready = dict(node="node.exe", installed=True, dependencies=True)
+        with patch("window.readiness", return_value=ready), patch("window.bundled_toolkit", return_value=self.root), patch.object(self.window, "next_process"), patch("window.QMessageBox.question") as question:
+            self.window.prepare_monitor(self.window.selected())
+            self.assertEqual(len(self.window.queue), 1)
+            self.assertIn("Start", self.window.queue[0][1])
+            question.assert_not_called()
+        self.window.set_busy(False)
+        ready["dependencies"] = False
+        with patch("window.readiness", return_value=ready), patch("window.bundled_toolkit", return_value=self.root), patch.object(self.window, "next_process"), patch("window.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes) as question:
+            self.window.prepare_monitor(self.window.selected())
+            self.assertIn("npm 下载", question.call_args.args[2])
+            self.assertIn("Prepare", self.window.queue[0][1])
 
     def test_directory_browser_saves_source_and_cancel_preserves_it(self):
         source = source_at(self.root / "my-dsh")

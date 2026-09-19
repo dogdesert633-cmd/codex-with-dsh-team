@@ -46,8 +46,9 @@ try {
             exit $LASTEXITCODE
         }
         Prepare {
+            Write-Output '项目文件已就绪。接下来安装固定版本的 DSH 及依赖；有 npm 缓存时优先复用。'
             $npm = Get-Command npm.cmd -ErrorAction Stop
-            & $npm.Source ci --prefix $skill
+            & $npm.Source ci --prefix $skill --prefer-offline --no-audit --no-fund
             exit $LASTEXITCODE
         }
         Start {
@@ -57,7 +58,122 @@ try {
                 Write-Output 'Monitor 已在运行，保留现有连接。'
                 exit 0
             }
-            & (Join-Path $skill 'scripts\start_dsh_team.ps1') -Workspace $workspacePath -UserDshHome $UserDshHome -SkipDshCheck -NoBrowser -NonInteractive
+            # Desktop owns the runtime location. An unrelated legacy shell's
+            # REMOTE_TO_DSH_HOME must never become this application's write target.
+            . (Join-Path $skill 'scripts\DshTeamCommon.ps1')
+            $identity = Get-DshTeamInstallIdentity
+            $teamHome = Join-Path (Get-DshTeamHomeRoot) $identity.InstallId
+            # Keep the legacy launcher's interface, but use literal Win32 paths
+            # when PowerShell's Start-Process would expand brackets in log paths.
+            function Start-Process {
+                [CmdletBinding()]
+                param([string]$FilePath, [string[]]$ArgumentList, [string]$WorkingDirectory,
+                      [string]$WindowStyle, [string]$RedirectStandardOutput,
+                      [string]$RedirectStandardError, [switch]$PassThru)
+                $forward = @{}
+                foreach ($key in $PSBoundParameters.Keys) { $forward[$key] = $PSBoundParameters[$key] }
+                if (($WorkingDirectory + $RedirectStandardOutput + $RedirectStandardError).IndexOfAny([char[]]'[]') -lt 0) {
+                    Microsoft.PowerShell.Management\Start-Process @forward
+                    return
+                }
+                if (-not ('DshDesktopLiteralProcess' -as [type])) {
+                    Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class DshDesktopLiteralProcess {
+    [StructLayout(LayoutKind.Sequential)] struct Security {
+        public int size; public IntPtr descriptor;
+        [MarshalAs(UnmanagedType.Bool)] public bool inherit;
+    }
+    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] struct Startup {
+        public int size; public string reserved, desktop, title;
+        public int x, y, width, height, xChars, yChars, fill, flags;
+        public short show, reservedSize; public IntPtr reserved2, input, output, error;
+    }
+    [StructLayout(LayoutKind.Sequential)] struct Info {
+        public IntPtr process, thread; public int pid, tid;
+    }
+    [StructLayout(LayoutKind.Sequential)] struct StartupEx {
+        public Startup startup; public IntPtr attributes;
+    }
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern bool InitializeProcThreadAttributeList(IntPtr list, int count, int flags, ref IntPtr size);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern bool UpdateProcThreadAttribute(IntPtr list, uint flags, IntPtr attribute,
+        IntPtr value, IntPtr size, IntPtr previous, IntPtr returnedSize);
+    [DllImport("kernel32.dll")] static extern void DeleteProcThreadAttributeList(IntPtr list);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    static extern IntPtr CreateFileW(string name, uint access, uint share, ref Security security,
+                                    uint disposition, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool CreateProcessW(string app, StringBuilder command, IntPtr processSecurity,
+        IntPtr threadSecurity, bool inherit, uint flags, IntPtr environment, string cwd,
+        ref StartupEx startup, out Info info);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+    static void Close(IntPtr handle) {
+        if (handle != IntPtr.Zero && handle != new IntPtr(-1)) CloseHandle(handle);
+    }
+    static IntPtr Open(string path, bool input) {
+        Security security = new Security { size=Marshal.SizeOf(typeof(Security)), inherit=true };
+        IntPtr handle = CreateFileW(path, input ? 0x80000000u : 0x40000000u, 3,
+                                   ref security, input ? 3u : 2u, 0x80, IntPtr.Zero);
+        if (handle == new IntPtr(-1)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        return handle;
+    }
+    public static Process Start(string app, string args, string cwd, string stdout, string stderr) {
+        StartupEx start = new StartupEx();
+        start.startup = new Startup { size=Marshal.SizeOf(typeof(StartupEx)), flags=0x101, show=0 };
+        Info info = new Info();
+        IntPtr handles = IntPtr.Zero;
+        bool initialized = false;
+        try {
+            start.startup.input=Open("NUL", true);
+            start.startup.output=Open(stdout, false);
+            start.startup.error=Open(stderr, false);
+            IntPtr size = IntPtr.Zero;
+            InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref size);
+            start.attributes = Marshal.AllocHGlobal(size);
+            if (!InitializeProcThreadAttributeList(start.attributes, 1, 0, ref size))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            initialized = true;
+            handles = Marshal.AllocHGlobal(3 * IntPtr.Size);
+            Marshal.WriteIntPtr(handles, 0, start.startup.input);
+            Marshal.WriteIntPtr(handles, IntPtr.Size, start.startup.output);
+            Marshal.WriteIntPtr(handles, 2 * IntPtr.Size, start.startup.error);
+            // Inherit ONLY the explicit standard handles. Inheriting PowerShell's
+            // own output pipe would prevent the desktop from seeing completion.
+            if (!UpdateProcThreadAttribute(start.attributes, 0, new IntPtr(0x20002), handles,
+                new IntPtr(3 * IntPtr.Size), IntPtr.Zero, IntPtr.Zero))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            // No shell, no console; only the Node process inherits these log handles.
+            if (!CreateProcessW(app, new StringBuilder("\"" + app + "\" " + args),
+                IntPtr.Zero, IntPtr.Zero, true, 0x08080000, IntPtr.Zero, cwd, ref start, out info))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            Process process = Process.GetProcessById(info.pid);
+            IntPtr retained = process.Handle;
+            return process;
+        } finally {
+            Close(info.thread); Close(info.process);
+            if (initialized) DeleteProcThreadAttributeList(start.attributes);
+            if (start.attributes != IntPtr.Zero) Marshal.FreeHGlobal(start.attributes);
+            if (handles != IntPtr.Zero) Marshal.FreeHGlobal(handles);
+            Close(start.startup.input); Close(start.startup.output); Close(start.startup.error);
+        }
+    }
+}
+'@
+                }
+                $process = [DshDesktopLiteralProcess]::Start($FilePath, ($ArgumentList -join ' '), $WorkingDirectory, $RedirectStandardOutput, $RedirectStandardError)
+                if ($PassThru) { $process } else { $process.Dispose() }
+            }
+            Write-Output '正在使用工具包专用运行目录；所选 DSH 配置目录保持只读。'
+            & (Join-Path $skill 'scripts\start_dsh_team.ps1') -Workspace $workspacePath -UserDshHome $UserDshHome `
+                -TeamDshHome $teamHome -InstallId $identity.InstallId -InstallManifestPath $identity.ManifestPath `
+                -SkipDshCheck -NoBrowser -NonInteractive
             exit $LASTEXITCODE
         }
         Stop {

@@ -1,6 +1,6 @@
 # Codex × DSH Team Toolkit（中文说明）
 
-> 本分支新增 **v1.2.1 PyQt6 桌面控制台**：检测本机 Monitor、选择 DSH 配置、同步设置、关联对话。
+> 本分支新增 **v1.2.2 PyQt6 桌面控制台**：检测本机 Monitor、选择 DSH 配置、同步设置、关联对话。
 > 双击 EXE 即可使用，详见[桌面版说明](desktop/README.md)。原有 v1.1.0 工具包实现保留。
 
 [English](README.md) | **简体中文**
@@ -47,11 +47,11 @@ Codex 负责协调与最终验收，需要时再接入 DeepSeek Harness（DSH）
 
 ## 安装（Windows 桌面版）
 
-1. 打开 [v1.2.1 下载页面](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/tag/v1.2.1)，在 **Assets** 中下载 `codex-dsh-desktop-v1.2.1-windows-x64.zip`。
+1. 打开 [v1.2.2 下载页面](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/tag/v1.2.2)，在 **Assets** 中下载 `codex-dsh-desktop-v1.2.2-windows-x64.zip`。
 2. **完整解压**到一个便于找到的工具目录，双击 `CodexDshDesktop.exe`。请保留旁边的 `_internal` 和 `toolkit` 文件夹，无需安装 Python。
-3. 打开“配置与模型”，点击“检测本机 DSH”或“浏览目录”，选择包含 `settings.yaml` 的 DSH 配置文件夹。
+3. 打开“配置与模型”，点击 **“自动查找 DSH 配置”**，核对默认供应商与模型。找到多份时选择一份；找不到时再手动选择包含 `settings.yaml` 的目录。
 4. 点击“添加项目”，选择你准备工作的项目文件夹；空白目录也可以，无需先初始化 Git。
-5. 点击“启动 Monitor”，确认安装工具包和依赖，等待日志显示完成、项目状态变为在线。首次准备依赖需要联网。
+5. 点击“启动 Monitor”，等待项目状态变为在线。项目文件可以离线安装；如果此项目缺少 DSH 运行依赖，会先提示联网下载，已有依赖则跳过。
 6. 在 Codex 中打开同一个项目文件夹，使用上面的 DSH 团队提示开始工作。
 
 `Source code (zip)` 和 `Source code (tar.gz)` 是源码归档，不包含可直接运行的桌面 EXE。
@@ -64,7 +64,7 @@ Codex 负责协调与最终验收，需要时再接入 DeepSeek Harness（DSH）
 
 安装包一次装齐所有内容。除非你确实只想要纯规则部分，否则不建议手工复制 Skill 目录。
 
-1. **下载**同一个 [v1.2.1 完整桌面包](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/download/v1.2.1/codex-dsh-desktop-v1.2.1-windows-x64.zip)。
+1. **下载**同一个 [v1.2.2 完整桌面包](https://github.com/dogdesert633-cmd/codex-dsh-team-toolkit/releases/download/v1.2.2/codex-dsh-desktop-v1.2.2-windows-x64.zip)。
 2. **完整解压**：安装器需要整棵目录，不是只要一个 EXE。
 3. **打开解压目录里的 `toolkit` 文件夹，运行 `CodexDshTeamToolkit.Install.exe`**；偏好脚本的话运行该目录下的 `Install.cmd`。
 4. **点击“浏览”，选择已有的项目目录。** 浏览器首次从安装程序所在目录打开，空白项目也可以。

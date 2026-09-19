@@ -125,36 +125,47 @@ class Store:
             "schema": "codex-dsh-user-settings-source/v1", "userDshHome": catalog["directory"]})
         return catalog
 
-    def candidates(self):
-        candidates = []
+    def saved_source(self):
         saved = self.base / "user-settings-source.json"
-        if saved.exists():
-            try:
-                record = read_json(saved)
-                value = record.get("userDshHome") if isinstance(record, dict) else None
-                if isinstance(value, str) and value:
-                    candidates.append(("上次选择", value))
-            except DesktopError:
-                pass
+        if not saved.exists():
+            return None
+        record = read_json(saved)
+        if (not isinstance(record, dict) or record.get("schema") != "codex-dsh-user-settings-source/v1"
+                or not isinstance(record.get("userDshHome"), str) or not record["userDshHome"]):
+            raise DesktopError("保存的配置位置无法读取，请手动选择一次 DSH 配置目录。")
+        return record["userDshHome"]
+
+    def candidates(self):
+        saved = self.saved_source()
+        candidates = [("上次选择", saved)] if saved else []
         for name in ("DSH_USER_HOME", "DSH_HOME"):
             if os.environ.get(name):
                 candidates.append((name, os.environ[name]))
         candidates.append(("用户默认目录", str(Path.home() / ".dsh")))
         found = []
+        seen = set()
         for source, directory in candidates:
-            if any(same_path(directory, item["directory"]) for item in found):
-                continue
-            if (Path(directory) / "settings.yaml").is_file():
-                try:
-                    found.append({**read_source(directory), "source": source})
-                except DesktopError:
-                    found.append({"directory": str(Path(directory).resolve()), "source": source,
-                                  "error": "配置文件无法解析", "provider": "", "model": ""})
+            try:
+                path = Path(directory).expanduser().resolve()
+                key = os.path.normcase(str(path))
+                if key in seen:
+                    continue
+                seen.add(key)
+                if source != "上次选择" and not (path / "settings.yaml").is_file():
+                    continue
+                catalog = read_source(path)
+                found.append({**catalog, "source": source})
+            except (DesktopError, OSError, ValueError) as error:
+                # Retain invalid saved locations so startup cannot silently switch providers.
+                found.append({"directory": str(directory), "source": source, "provider": "", "model": "",
+                              "error": str(error) if isinstance(error, DesktopError) else "无法访问此配置目录。"})
         return found
 
 
 def read_source(directory):
     path = Path(directory).expanduser().resolve()
+    if (path / ".codex-dsh-team-home.json").exists():
+        raise DesktopError("这是工具包的运行副本，请选择你自己的 DSH 配置目录。")
     settings = path / "settings.yaml"
     if not settings.is_file():
         raise DesktopError("这个文件夹中没有 settings.yaml，请选择 DSH 配置目录。")

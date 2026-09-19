@@ -9,10 +9,11 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import backend
-from test_backend import protect
+from test_backend import protect, source_at
 
 
 class BridgeTests(unittest.TestCase):
@@ -43,21 +44,76 @@ class BridgeTests(unittest.TestCase):
     def test_start_forwards_selected_source_without_model_check_on_ps5_and_ps7(self):
         script = self.workspace / ".agents/skills/mcp-to-dsh/scripts/start_dsh_team.ps1"
         script.parent.mkdir(parents=True)
-        script.write_text("""param([string]$Workspace,[string]$UserDshHome,[switch]$SkipDshCheck,[switch]$NoBrowser,[switch]$NonInteractive)
-@{ workspace=$Workspace; source=$UserDshHome; skipCheck=[bool]$SkipDshCheck; noBrowser=[bool]$NoBrowser; nonInteractive=[bool]$NonInteractive } | ConvertTo-Json -Compress
+        common = Path(__file__).resolve().parents[2] / 'payload/.agents/skills/mcp-to-dsh/scripts/DshTeamCommon.ps1'
+        shutil.copy2(common, script.parent / common.name)
+        script.write_text("""param([string]$Workspace,[string]$UserDshHome,[string]$TeamDshHome,[string]$InstallId,[string]$InstallManifestPath,[switch]$SkipDshCheck,[switch]$NoBrowser,[switch]$NonInteractive)
+. (Join-Path $PSScriptRoot 'DshTeamCommon.ps1')
+Assert-UserDshHomeReadOnlySource -UserDshHome $UserDshHome -TeamDshHome $TeamDshHome | Out-Null
+$resolved = Resolve-DshTeamHome -Requested $TeamDshHome -Workspace $Workspace -InstallId $InstallId -AllowCreate
+Push-Location -LiteralPath $Workspace
+try {
+    $node = Get-Command node.exe
+    $probe = Start-Process -FilePath $node.Source -ArgumentList '--version' -WorkingDirectory $Workspace -WindowStyle Hidden -RedirectStandardOutput (Join-Path $Workspace 'probe-output.log') -RedirectStandardError (Join-Path $Workspace 'probe-error.log') -PassThru
+    if (-not $probe.WaitForExit(10000)) { throw 'fixture did not exit' }
+} catch { Write-Output ('FIXTURE: ' + $_.Exception.Message); throw } finally { Pop-Location }
+@{ workspace=$Workspace; source=$UserDshHome; team=$resolved.TeamDshHome; manifest=$InstallManifestPath; skipCheck=[bool]$SkipDshCheck; noBrowser=[bool]$NoBrowser; nonInteractive=[bool]$NonInteractive } | ConvertTo-Json -Compress
 exit 0
 """, encoding="utf-8-sig")
         source = self.root / "用户配置"
         source.mkdir()
+        (source / "settings.yaml").write_text("user: unchanged", encoding="utf-8")
+        legacy = self.root / "旧 home-acp"
+        legacy.mkdir()
+        (legacy / "settings.yaml").write_text("legacy: unchanged", encoding="utf-8")
         candidates = [backend.power_shell(), str(Path(os.environ["WINDIR"]) / "System32/WindowsPowerShell/v1.0/powershell.exe")]
         for shell in dict.fromkeys(candidates):
             with self.subTest(shell=shell):
                 command = backend.bridge_command("Start", self.workspace, source=source)
                 command[0] = shell
-                result = subprocess.run(command, capture_output=True, timeout=25, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-                self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8", "replace"))
-                data = json.loads(result.stdout.decode("utf-8-sig"))
+                base = self.root / Path(shell).stem
+                with patch.dict(os.environ, {"CODEX_DSH_TEAM_BASE_DIR": str(base), "REMOTE_TO_DSH_HOME": str(legacy)}):
+                    result = subprocess.run(command, capture_output=True, timeout=25, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                self.assertEqual(result.returncode, 0, result.stdout.decode("utf-8", "replace") + result.stderr.decode("utf-8", "replace"))
+                data = json.loads(result.stdout.decode("utf-8-sig").splitlines()[-1])
+                team, manifest = Path(data.pop("team")), Path(data.pop("manifest"))
+                self.assertEqual(team.parent, base / "runtimes")
+                self.assertEqual(manifest, base / "install.json")
+                self.assertTrue((team / ".codex-dsh-team-home.json").is_file())
+                self.assertTrue((self.workspace / "probe-output.log").read_text().startswith("v"))
                 self.assertEqual(data, {"workspace": str(self.workspace), "source": str(source), "skipCheck": True, "noBrowser": True, "nonInteractive": True})
+                self.assertEqual(list(source.iterdir()), [source / "settings.yaml"])
+                self.assertEqual(list(legacy.iterdir()), [legacy / "settings.yaml"])
+                self.assertEqual((source / "settings.yaml").read_text(), "user: unchanged")
+                self.assertEqual((legacy / "settings.yaml").read_text(), "legacy: unchanged")
+
+    @unittest.skipUnless(os.environ.get("DESKTOP_TEST_DSH_MODULES"), "Set DESKTOP_TEST_DSH_MODULES for offline real-launcher validation")
+    def test_real_start_with_legacy_home_uses_owned_runtime_and_selected_default(self):
+        skill = self.workspace / ".agents/skills/mcp-to-dsh"
+        payload = Path(__file__).resolve().parents[2] / "payload/.agents/skills/mcp-to-dsh"
+        shutil.copytree(payload, skill, ignore=shutil.ignore_patterns("node_modules"))
+        shutil.copytree(os.environ["DESKTOP_TEST_DSH_MODULES"], skill / "node_modules")
+        source = source_at(self.root / "用户 DSH 配置")
+        (source / ".credentials.yaml").write_text("FIXTURE_API_KEY: fake-not-a-real-key\n", encoding="utf-8")
+        source_before = {p.name: p.read_bytes() for p in source.iterdir()}
+        legacy = source_at(self.root / "旧 home-acp")
+        base = self.root / "桌面运行数据"
+        with patch.dict(os.environ, {"CODEX_DSH_TEAM_BASE_DIR": str(base), "REMOTE_TO_DSH_HOME": str(legacy)}):
+            try:
+                started = self.invoke("Start", source=source)
+                self.assertEqual(started.returncode, 0, started.stdout.decode("utf-8", "replace")[-5000:] + started.stderr.decode("utf-8", "replace"))
+                state = backend.MonitorClient(self.workspace).snapshot()
+                self.assertTrue(state["online"])
+                self.assertEqual(state["settings"]["effective"], {"provider": "chosen-provider", "model": "chosen-model"})
+                self.assertEqual(state["runs"], [])
+                self.assertTrue(backend.same_path(state["health"]["dshUserHome"], source))
+                team = Path(state["health"]["dshHome"])
+                self.assertEqual(team.parent, base / "runtimes")
+                self.assertTrue((team / ".codex-dsh-team-home.json").is_file())
+                self.assertEqual(source_before, {p.name: p.read_bytes() for p in source.iterdir()})
+                self.assertEqual(list(legacy.iterdir()), [legacy / "settings.yaml"])
+            finally:
+                stopped = self.invoke("Stop")
+                self.assertEqual(stopped.returncode, 0, stopped.stderr.decode("utf-8", "replace"))
 
     @unittest.skipUnless(shutil.which("node"), "Node is required for the local process fixture")
     def test_discover_reuse_and_stop_only_owned_fixture_process(self):

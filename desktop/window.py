@@ -6,7 +6,7 @@ import json
 import codecs
 
 from PyQt6.QtCore import QObject, QRunnable, QThreadPool, pyqtSignal, Qt, QTimer, QProcess, QUrl
-from PyQt6.QtGui import QDesktopServices, QColor, QFont
+from PyQt6.QtGui import QDesktopServices, QColor, QFont, QPalette
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
     QGridLayout, QStackedWidget, QListWidget, QListWidgetItem, QTableWidget, QTableWidgetItem,
@@ -21,6 +21,7 @@ from version import VERSION
 
 STYLE = """
 QWidget { color: #25304a; font-family: 'Microsoft YaHei UI', 'Segoe UI'; font-size: 13px; }
+QDialog, QMessageBox, QMenu { background: #ffffff; }
 QMainWindow, QWidget#canvas { background: #f3f5fb; }
 QFrame#sidebar { background: #fff; border-right: 1px solid #e6eaf4; }
 QFrame#card { background: white; border: 1px solid #e7ebf3; border-radius: 14px; }
@@ -58,8 +59,24 @@ QScrollBar:vertical { background: transparent; width: 8px; margin: 0; }
 QScrollBar::handle:vertical { background: #d6dbe8; border-radius: 4px; min-height: 30px; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QSplitter::handle { background: transparent; width: 16px; }
-QToolTip { background: #25304a; color: white; padding: 6px; border: 0; }
+QToolTip { background: #ffffff; color: #25304a; padding: 6px; border: 1px solid #dce1ed; }
 """
+
+
+def apply_light_theme(app):
+    app.setStyle("Fusion")
+    app.styleHints().setColorScheme(Qt.ColorScheme.Light)
+    palette = QPalette()
+    colors = {"Window": "#ffffff", "WindowText": "#25304a", "Base": "#ffffff",
+              "AlternateBase": "#f8f9fd", "Text": "#25304a", "Button": "#ffffff",
+              "ButtonText": "#25304a", "Highlight": "#efedff", "HighlightedText": "#514aca",
+              "ToolTipBase": "#ffffff", "ToolTipText": "#25304a", "PlaceholderText": "#768098"}
+    for name, color in colors.items():
+        palette.setColor(getattr(QPalette.ColorRole, name), QColor(color))
+    for name in ("WindowText", "Text", "ButtonText"):
+        palette.setColor(QPalette.ColorGroup.Disabled, getattr(QPalette.ColorRole, name), QColor("#a2aabd"))
+    app.setPalette(palette)
+    app.setStyleSheet(STYLE)
 
 
 class Signals(QObject):
@@ -112,11 +129,14 @@ def card():
 class MainWindow(QMainWindow):
     def __init__(self, store=None, auto_discover=True):
         super().__init__()
+        apply_light_theme(QApplication.instance())
         self.store = store or Store()
         self.snapshots, self.source = {}, None
         self.workers, self.polling, self.busy = set(), False, False
         self.process, self.queue, self.output_buffer = None, [], ""
         self._model_key = None
+        self._model_catalog = {}
+        self.searching_source = False
         self._state_generation = 0
         self._stop_targets = []
         self._closing_after_stop = self._allow_exit = False
@@ -135,7 +155,7 @@ class MainWindow(QMainWindow):
         self.timer.setInterval(5000)
         self.timer.timeout.connect(self.refresh)
         if auto_discover:
-            self.load_source()
+            QTimer.singleShot(0, self.load_source)
             QTimer.singleShot(150, self.detect_monitors)
             self.timer.start()
         if self.store.warning:
@@ -313,7 +333,7 @@ class MainWindow(QMainWindow):
         grid.setContentsMargins(0, 0, 0, 0)
         source_card, box = card()
         box.addWidget(label("连接你自己的 DSH", "heading"))
-        helper = label("选择包含 settings.yaml 的配置文件夹。设置保持只读，运行时使用同步副本。", "muted")
+        helper = label("先自动查找你的 DSH 配置，核对默认模型；找不到时再手动选择配置目录。", "muted")
         helper.setWordWrap(True)
         box.addWidget(helper)
         source_row = QHBoxLayout()
@@ -322,18 +342,21 @@ class MainWindow(QMainWindow):
         self.source_path.setPlaceholderText("尚未选择 DSH 配置目录")
         self.source_path.setReadOnly(True)
         source_row.addWidget(self.source_path, 1)
-        self.browse_source = button("浏览目录…", self.choose_source, True)
-        source_row.addWidget(self.browse_source)
-        self.detect_source = button("检测本机 DSH", self.find_source)
+        self.detect_source = button("自动查找 DSH 配置", self.find_source, True)
         source_row.addWidget(self.detect_source)
+        self.browse_source = button("手动选择目录…", self.choose_source)
+        source_row.addWidget(self.browse_source)
         box.addLayout(source_row)
         self.source_summary = label("默认供应商 / 模型：尚未读取", "heading")
         self.source_summary.setWordWrap(True)
-        self.source_note = label("只检查保存的位置、环境变量与用户默认目录，不搜索整个硬盘。", "muted")
+        self.source_note = label("找到后会显示默认供应商与模型，源配置保持只读。", "muted")
         self.source_note.setWordWrap(True)
         box.addWidget(self.source_summary)
         box.addWidget(self.source_note)
-        self.runtime_note = label("项目运行使用工具包自带的 DSH 依赖；无需填写 DSH 程序路径。", "muted")
+        self.source_status = label("只检查保存的位置、环境变量与用户默认目录，不搜索整个硬盘。", "muted")
+        self.source_status.setWordWrap(True)
+        box.addWidget(self.source_status)
+        self.runtime_note = label("项目使用固定版本的 DSH 依赖，缺少时会提示准备；无需填写 DSH 程序路径。", "muted")
         self.runtime_note.setWordWrap(True)
         box.addWidget(self.runtime_note)
         grid.addWidget(source_card)
@@ -343,8 +366,11 @@ class MainWindow(QMainWindow):
         box.addWidget(self.settings_project)
         form = QHBoxLayout()
         self.provider_combo, self.model_combo = QComboBox(), QComboBox()
+        self.provider_combo.setPlaceholderText("供应商")
+        self.model_combo.setPlaceholderText("模型")
         self.provider_combo.setMinimumWidth(160)
         self.provider_combo.currentIndexChanged.connect(self.provider_changed)
+        self.model_combo.currentIndexChanged.connect(self.update_model_action)
         form.addWidget(self.provider_combo, 1)
         form.addWidget(self.model_combo, 1)
         self.apply_model = button("应用到后续任务", self.save_model, True)
@@ -352,13 +378,20 @@ class MainWindow(QMainWindow):
         form.addWidget(self.apply_model)
         form.addWidget(self.follow_default)
         box.addLayout(form)
+        connection_row = QHBoxLayout()
+        self.model_status = label("", "muted")
+        self.model_status.setWordWrap(True)
+        connection_row.addWidget(self.model_status, 1)
+        self.connect_model = button("启动 Monitor 以应用模型", self.start_monitor)
+        connection_row.addWidget(self.connect_model)
+        box.addLayout(connection_row)
         note = label("只影响所选 Monitor 的后续任务，不修改用户 settings.yaml，也不更换正在运行的任务模型。", "muted")
         note.setWordWrap(True)
         box.addWidget(note)
         grid.addWidget(model_card)
         guide, box = card()
         box.addWidget(label("第一次使用？三步就好", "heading"))
-        box.addWidget(label("01  选择你的 DSH 配置目录\n02  添加项目，然后点击“启动 Monitor”\n03  回到 Codex 工作，随时在这里查看状态", "muted"))
+        box.addWidget(label("01  点击“自动查找 DSH 配置”，核对默认模型\n02  添加项目，然后点击“启动 Monitor”\n03  回到 Codex 工作，随时在这里查看状态", "muted"))
         grid.addWidget(guide)
         grid.addStretch()
         self.add_page(page)
@@ -456,7 +489,14 @@ class MainWindow(QMainWindow):
         mode = "手动偏好" if settings.get("mode") == "override" else "跟随用户默认"
         self.model_summary.setText(f"模型：{effective.get('provider', '—')} / {effective.get('model', '—')}  ·  {mode}")
         self.settings_project.setText("所选项目：" + (project["name"] if project else "尚未选择"))
-        model_key = ((project or {}).get("workspace"), json.dumps(settings, sort_keys=True))
+        preview = not online and bool(self.source) and not self.source.get("error")
+        if preview:
+            settings = {"effective": {"provider": self.source["provider"], "model": self.source["model"]},
+                        "providers": [{"id": p["id"], "models": [{"id": m} for m in p["models"]]}
+                                      for p in self.source.get("providers", [])]}
+            effective = settings["effective"]
+        self._model_catalog = settings
+        model_key = ((project or {}).get("workspace"), online, json.dumps(settings, sort_keys=True))
         if model_key != self._model_key:
             self._model_key = model_key
             self.provider_combo.blockSignals(True)
@@ -468,17 +508,39 @@ class MainWindow(QMainWindow):
             self.provider_combo.blockSignals(False)
             self.provider_changed()
             self.model_combo.setCurrentIndex(self.model_combo.findData(effective.get("model")))
-        self.provider_combo.setEnabled(usable)
-        self.model_combo.setEnabled(usable)
-        self.apply_model.setEnabled(usable and bool(self.provider_combo.currentData()) and bool(self.model_combo.currentData()))
+        editable = (usable or preview) and bool(project) and not self.busy
+        self.provider_combo.setEnabled(editable and self.provider_combo.count() > 0)
+        self.model_combo.setEnabled(editable and self.model_combo.count() > 0)
+        self.update_model_action()
+        self.connect_model.setVisible(bool(project) and not online)
+        self.connect_model.setEnabled(bool(preview) and not self.busy)
+        if not project:
+            reason = "请先添加并选择一个项目。"
+        elif self.busy:
+            reason = "正在处理项目操作，完成后可继续设置模型。"
+        elif state.get("limited"):
+            reason = "此旧版 Monitor 仅支持概览。请先停止后台，再从桌面启动，以启用模型设置。"
+        elif not online:
+            reason = "Monitor 尚未连接。当前可预览本地模型；启动后读取项目实际设置，再选择并应用。" if preview else "先自动查找 DSH 配置，再启动 Monitor，即可设置项目模型。"
+        elif not self.provider_combo.count():
+            reason = "Monitor 没有返回可选模型，请核对 DSH 配置并点击“同步配置”。"
+        else:
+            reason = "已连接项目 Monitor。选择模型后，点击“应用到后续任务”保存。"
+        self.model_status.setText(reason)
+        self.apply_model.setToolTip(reason)
+        self.follow_default.setToolTip(reason)
 
     def provider_changed(self, *_):
         self.model_combo.clear()
-        settings = self.state().get("settings", {})
+        settings = self._model_catalog
         selected = next((p for p in settings.get("providers", []) if p["id"] == self.provider_combo.currentData()), {})
         for model in selected.get("models", []):
             self.model_combo.addItem(model.get("name") or model["id"], model["id"])
-        self.apply_model.setEnabled(bool(self.model_combo.currentData()) and bool(self.state().get("online")) and not self.state().get("limited") and not self.busy)
+        self.update_model_action()
+
+    def update_model_action(self, *_):
+        self.apply_model.setEnabled(bool(self.provider_combo.currentData()) and bool(self.model_combo.currentData())
+                                    and bool(self.state().get("online")) and not self.state().get("limited") and not self.busy)
 
     def refresh(self):
         if self.polling or self.busy or not self.store.projects:
@@ -509,7 +571,8 @@ class MainWindow(QMainWindow):
         self.run_worker(discover_monitors, complete, done=lambda: self.detect_button.setEnabled(True))
 
     def add_project(self):
-        path = QFileDialog.getExistingDirectory(self, "选择项目文件夹", str(program_directory()))
+        path = QFileDialog.getExistingDirectory(self, "选择项目文件夹", str(program_directory()),
+                                               QFileDialog.Option.ShowDirsOnly | QFileDialog.Option.DontUseNativeDialog)
         if not path:
             return
         try:
@@ -565,46 +628,88 @@ class MainWindow(QMainWindow):
                 self.fail(str(error))
 
     def load_source(self):
-        found = self.store.candidates()
-        if found:
-            self.display_source(found[0])
+        self.find_source(startup=True)
 
     def display_source(self, source):
         self.source = source
         self.source_path.setText(source["directory"])
         self.source_summary.setText(f"{source.get('provider') or '未设置默认供应商'}  /  {source.get('model') or '未设置默认模型'}")
-        self.source_note.setText(source.get("error") or ("已检测到凭据文件；凭据内容不会显示或写入桌面日志。" if source.get("credentialsPresent") else "未发现独立凭据文件；若通过环境变量提供密钥，可以继续使用。"))
+        self.source_note.setText(source.get("error") or ("已检测到凭据文件；凭据内容不会显示或写入桌面日志。" if source.get("credentialsPresent") else "未发现 .credentials.yaml；当前启动器需要 DSH 保存的凭据文件，请先在 DSH 中完成账号配置。"))
+        self.project_changed()
 
     def choose_source(self):
-        directory = QFileDialog.getExistingDirectory(self, "选择 DSH 配置目录（包含 settings.yaml）", self.source_path.text() or str(program_directory()))
+        if self.busy or self.searching_source:
+            return
+        directory = QFileDialog.getExistingDirectory(self, "选择 DSH 配置目录（包含 settings.yaml）", self.source_path.text() or str(program_directory()),
+                                                    QFileDialog.Option.ShowDirsOnly | QFileDialog.Option.DontUseNativeDialog)
         if not directory:
             return
         try:
             self.display_source(self.store.set_source(directory))
+            self.source_status.setText("已记住配置位置；源 settings.yaml 保持只读。")
             self.log("已记住 DSH 配置目录，后续从此处读取用户设置。")
         except DesktopError as error:
             QMessageBox.information(self, "请检查配置目录", str(error))
 
-    def find_source(self):
-        found = self.store.candidates()
-        state = readiness((self.selected() or {}).get("workspace", program_directory()))
-        self.runtime_note.setText("Node：" + (state["node"] or "未找到") + "\n全局 DSH：" + (state["globalDsh"] or "未发现；项目可使用工具包固定依赖"))
-        if not found:
-            self.log("固定位置中未找到 DSH 配置，请点击“浏览目录”。")
+    def find_source(self, _checked=False, startup=False):
+        if self.busy or self.searching_source:
             return
-        options = [f"{row['source']}  ·  {row['directory']}" for row in found]
-        choice, accepted = QInputDialog.getItem(self, "选择检测到的 DSH 配置", "发现以下配置目录，请选择要使用的一份：", options, 0, False)
-        if accepted:
+        self.searching_source = True
+        self.detect_source.setEnabled(False)
+        self.browse_source.setEnabled(False)
+        self.detect_source.setText("正在查找…")
+        self.source_status.setText("正在检查常用配置位置…")
+        workspace = (self.selected() or {}).get("workspace", program_directory())
+
+        def complete(result):
+            found, runtime = result
+            self.runtime_note.setText("Node：" + (runtime["node"] or "未找到") + "\n项目使用固定版本的 DSH 依赖，已安装时直接复用。")
+            saved = next((row for row in found if row["source"] == "上次选择"), None)
+            valid = [row for row in found if not row.get("error")]
+            if startup and saved:
+                self.display_source(saved)
+                self.source_status.setText("已读取上次选择。" if not saved.get("error") else "上次的配置不可用，请自动查找或手动选择；尚未切换配置。")
+                return
+            if not valid:
+                detail = "发现配置但无法使用：" + found[0]["error"] if found else "未在常用位置找到 DSH 配置。"
+                self.source_status.setText(detail + " 请点击“手动选择目录…”。")
+                self.log(self.source_status.text())
+                return
+            if startup and len(valid) > 1:
+                self.source_status.setText(f"发现 {len(valid)} 份配置，请点击“自动查找 DSH 配置”选择要使用的一份。")
+                return
+            selected = valid[0]
+            # An explicit search can replace a broken saved choice, but only after confirmation.
+            if len(valid) > 1 or (saved and saved.get("error")):
+                options = [f"{row['provider']} / {row['model']}  ·  {row['source']}  ·  {row['directory']}" for row in valid]
+                choice, accepted = QInputDialog.getItem(self, "选择 DSH 配置", "发现以下可用配置，请选择：", options, 0, False)
+                if not accepted:
+                    self.source_status.setText("已取消选择，保留原来的配置位置。")
+                    return
+                selected = valid[options.index(choice)]
             try:
-                self.display_source(self.store.set_source(found[options.index(choice)]["directory"]))
-                self.log("DSH 配置检测完成，已保存选择。")
+                self.display_source(self.store.set_source(selected["directory"]))
+                self.source_status.setText("已找到并记住配置位置；源 settings.yaml 保持只读。")
+                self.log("已读取 DSH 配置：" + self.source_summary.text())
             except DesktopError as error:
-                self.fail(str(error))
+                failed(str(error))
+
+        def failed(message):
+            self.source_status.setText(message + " 可点击“手动选择目录…”。")
+            self.log(message)
+
+        def done():
+            self.searching_source = False
+            self.detect_source.setText("自动查找 DSH 配置")
+            self.detect_source.setEnabled(not self.busy)
+            self.browse_source.setEnabled(not self.busy)
+
+        self.run_worker(lambda: (self.store.candidates(), readiness(workspace)), complete, failed, done)
 
     def set_busy(self, value, title=""):
         self.busy = value
         for control in (self.add_button, self.browse_source, self.detect_source):
-            control.setEnabled(not value)
+            control.setEnabled(not value and not self.searching_source)
         if title:
             self.job_label.setText(title)
             self.log(title)
@@ -629,7 +734,7 @@ class MainWindow(QMainWindow):
 
     def sync_settings(self):
         project = self.selected()
-        if not project or self.busy:
+        if not project or self.busy or self.searching_source:
             return
         if not self.source:
             self.show_page(1)
@@ -647,7 +752,7 @@ class MainWindow(QMainWindow):
 
     def save_model(self, _checked=False, follow=False):
         project, state = self.selected(), self.state()
-        if not project or self.busy or not state.get("online"):
+        if not project or self.busy or not state.get("online") or state.get("limited"):
             return
         selection = None if follow else {"provider": self.provider_combo.currentData(), "model": self.model_combo.currentData()}
         if selection and not all(selection.values()):
@@ -668,7 +773,7 @@ class MainWindow(QMainWindow):
 
     def start_monitor(self):
         project = self.selected()
-        if not project or self.busy:
+        if not project or self.busy or self.searching_source:
             return
         if self.state().get("online"):
             self.refresh()
@@ -701,9 +806,12 @@ class MainWindow(QMainWindow):
                     raise DesktopError("未找到随附工具包，请使用完整桌面发行包。")
                 queue.append(("安装项目工具包", bridge_command("Install", workspace, package=package)))
             if not ready["dependencies"]:
-                queue.append(("准备 DSH 依赖（首次需要联网）", bridge_command("Prepare", workspace)))
+                queue.append(("安装项目缺少的 DSH 运行依赖（需要联网）", bridge_command("Prepare", workspace)))
             queue.append(("同步配置并启动 Monitor", bridge_command("Start", workspace, source=self.source["directory"])))
-            if len(queue) > 1 and QMessageBox.question(self, "准备项目", "将为这个项目安装工具包和所需依赖，然后启动本机 Monitor。\n不会发起模型任务。是否继续？") != QMessageBox.StandardButton.Yes:
+            preparation = "项目文件安装使用随附工具包，可离线完成。\n" if not ready["installed"] else ""
+            if not ready["dependencies"]:
+                preparation += "此项目缺少 DSH 运行依赖，将通过 npm 下载并安装；以后依赖齐全时跳过。\n"
+            if len(queue) > 1 and QMessageBox.question(self, "准备项目", preparation + "完成后启动本机 Monitor，不会发起模型任务。是否继续？") != QMessageBox.StandardButton.Yes:
                 self.set_busy(False)
                 self.progress.setRange(0, 100)
                 self.progress.setValue(0)
@@ -750,6 +858,7 @@ class MainWindow(QMainWindow):
                 self.close()
             return
         title, command = self.queue.pop(0)
+        self.progress.setRange(0, 0)
         self.job_label.setText(title)
         self.log(title)
         process = QProcess(self)

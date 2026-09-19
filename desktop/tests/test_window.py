@@ -57,10 +57,10 @@ class WindowTests(unittest.TestCase):
         self.window.reload_projects()
         return state
 
-    def test_project_conversation_and_native_session_are_visible(self):
+    def test_project_team_and_native_session_need_no_manual_conversation(self):
         self.connected()
-        self.assertIn("我的项目对话", self.window.conversation.text())
-        self.assertEqual(self.window.conversation.toolTip(), "codex-fixture-id")
+        self.assertIn("无需关联对话", self.window.conversation.text())
+        self.assertFalse(hasattr(self.window, "associate_button"))
         self.assertEqual(self.window.table.item(0, 2).text(), "fixture-dsh-session")
         self.assertEqual(self.window.address.text(), "http://127.0.0.1:4317")
         self.assertEqual(self.window.stat_labels[1].text(), "1")
@@ -184,20 +184,68 @@ class WindowTests(unittest.TestCase):
             dialog.close()
             dialog.deleteLater()
 
-    def test_preparation_skips_installed_dependencies_and_explains_download_when_missing(self):
+    def test_start_never_installs_and_missing_dependencies_require_separate_action(self):
         self.window.display_source(backend.read_source(source_at(self.root / "source")))
-        ready = dict(node="node.exe", installed=True, dependencies=True)
-        with patch("window.readiness", return_value=ready), patch("window.bundled_toolkit", return_value=self.root), patch.object(self.window, "next_process"), patch("window.QMessageBox.question") as question:
-            self.window.prepare_monitor(self.window.selected())
+        self.wait_until(lambda: not self.window.checking_projects)
+        with patch("window.readiness", return_value={"ready": False}), patch("window.existing_monitor", return_value=None), patch.object(self.window, "next_process") as start:
+            self.window.start_monitor()
+            self.wait_until(lambda: not self.window.busy)
+            start.assert_not_called()
+            self.assertIn("先点击", self.window.logs.toPlainText())
+        with patch("window.readiness", return_value={"ready": True}), patch("window.existing_monitor", return_value=None), patch.object(self.window, "next_process") as start:
+            self.window.start_monitor()
+            self.wait_until(lambda: start.called)
             self.assertEqual(len(self.window.queue), 1)
             self.assertIn("Start", self.window.queue[0][1])
-            question.assert_not_called()
-        self.window.set_busy(False)
-        ready["dependencies"] = False
-        with patch("window.readiness", return_value=ready), patch("window.bundled_toolkit", return_value=self.root), patch.object(self.window, "next_process"), patch("window.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes) as question:
-            self.window.prepare_monitor(self.window.selected())
+
+    def test_install_is_separate_and_keeps_existing_dependencies_when_updating(self):
+        self.wait_until(lambda: not self.window.checking_projects)
+        ready = dict(nodeReady=True, npm="npm.cmd", installed=False, dependencies=False)
+        with patch("window.readiness", side_effect=lambda _: dict(ready)), patch("window.existing_monitor", return_value=None), patch("window.bundled_toolkit", return_value=self.root), patch.object(self.window, "next_process") as run, patch("window.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes) as question:
+            self.window.install_dependencies()
+            self.wait_until(lambda: run.called)
             self.assertIn("npm 下载", question.call_args.args[2])
-            self.assertIn("Prepare", self.window.queue[0][1])
+            self.assertEqual([q[1][q[1].index("-Action")+1] for q in self.window.queue], ["Install", "Prepare"])
+            self.window.set_busy(False)
+            ready.update(installed=True, dependencies=True, updateAvailable=True)
+            run.reset_mock()
+            self.window.install_dependencies()
+            self.wait_until(lambda: run.called)
+            self.assertEqual([q[1][q[1].index("-Action")+1] for q in self.window.queue], ["Install"])
+
+    def test_project_check_is_automatic_async_and_gates_buttons(self):
+        self.wait_until(lambda: not self.window.checking_projects)
+        ready = dict(ready=True, nodeReady=True, npm="npm.cmd", installed=True,
+                     dependencies=True, dependencyPresent=True, nodeVersion="v24.16.0")
+        def slow(_):
+            time.sleep(.2)
+            return ready
+        beats = []
+        timer = QTimer()
+        timer.setInterval(15)
+        timer.timeout.connect(lambda: beats.append(1))
+        timer.start()
+        with patch("window.readiness", side_effect=slow):
+            self.window.check_project()
+            self.assertIn("正在检查", self.window.preparation_status.text())
+            self.assertFalse(self.window.install_button.isEnabled())
+            self.wait_until(lambda: not self.window.checking_projects)
+        timer.stop()
+        self.assertGreater(len(beats), 3)
+        self.assertTrue(self.window.start_button.isEnabled())
+        self.assertFalse(self.window.install_button.isEnabled())
+        self.assertTrue(self.window.uninstall_button.isEnabled())
+        self.connected()
+        self.assertFalse(self.window.uninstall_button.isEnabled())
+
+    def test_uninstall_requires_confirmation_and_only_queues_dependency_removal(self):
+        with patch("window.QMessageBox.question", return_value=QMessageBox.StandardButton.No), patch.object(self.window, "next_process") as run:
+            self.window.uninstall_dependencies()
+            run.assert_not_called()
+        with patch("window.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes), patch.object(self.window, "next_process"):
+            self.window.uninstall_dependencies()
+            self.assertEqual(len(self.window.queue), 1)
+            self.assertIn("RemoveDependencies", self.window.queue[0][1])
 
     def test_directory_browser_saves_source_and_cancel_preserves_it(self):
         source = source_at(self.root / "my-dsh")

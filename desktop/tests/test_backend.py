@@ -278,6 +278,46 @@ class MonitorTests(unittest.TestCase):
 
 
 class PlatformTests(unittest.TestCase):
+    def test_readiness_detects_partial_dependencies_old_node_and_toolkit_update(self):
+        with tempfile.TemporaryDirectory(prefix="desktop-readiness-") as directory:
+            root = Path(directory)
+            skill = root / ".agents/skills/mcp-to-dsh"
+            files = ("package.json", "package-lock.json", "SKILL.md", "scripts/start_dsh_team.ps1",
+                     "scripts/start_dsh_monitor.ps1", "scripts/DshTeamCommon.ps1", "scripts/Sync-DshTeamConfig.ps1",
+                     "src/server.mjs", "src/model-settings.mjs", "src/security.mjs", "src/team-home.mjs")
+            for name in files:
+                path = skill / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("fixture")
+            for name in ("codex-team", "dsh-role-boundaries"):
+                path = skill.parent / name / "SKILL.md"
+                path.parent.mkdir()
+                path.write_text("fixture")
+            package = root / "package"
+            package.mkdir()
+            backend.atomic_json(package / "release-manifest.json", {"version": "1.3.0"})
+            backend.atomic_json(root / ".codex-dsh-team-toolkit/manifest.json", {"version": "1.1.0"})
+            with patch("backend.shutil.which", return_value="fixture.exe"), patch("backend.bundled_toolkit", return_value=package), patch("backend.subprocess.run", return_value=subprocess.CompletedProcess([], 0, b"v22.18.0\n")) as run:
+                before = backend.readiness(root)
+                self.assertTrue(before["installed"])
+                self.assertFalse(before["nodeReady"])
+                self.assertFalse(before["ready"])
+                self.assertTrue(before["updateAvailable"])
+                for name in ("@deepseek-ai/dsh", "@agentclientprotocol/sdk", "@earendil-works/pi-ai", "yaml", "zod"):
+                    path = skill / "node_modules" / name / "package.json"
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text("{}")
+                run.return_value = subprocess.CompletedProcess([], 0, b"v24.16.0\n")
+                self.assertFalse(backend.readiness(root)["dependencies"], "DSH entry must also exist")
+                entry = skill / "node_modules/@deepseek-ai/dsh/lib/bin.js"
+                entry.parent.mkdir()
+                entry.write_text("// fixture")
+                self.assertFalse(backend.readiness(root)["ready"], "Pending launcher update must be explicit before starting")
+                backend.atomic_json(root / ".codex-dsh-team-toolkit/manifest.json", {"version": "1.3.0"})
+                self.assertTrue(backend.readiness(root)["ready"])
+                backend.atomic_json(root / ".codex-dsh-team-toolkit/manifest.json", {"version": "1.4.0"})
+                self.assertFalse(backend.readiness(root)["updateAvailable"], "Do not offer an automatic downgrade")
+
     @unittest.skipUnless(os.name == "nt", "Windows DPAPI")
     def test_current_user_dpapi_roundtrip(self):
         self.assertEqual(backend.decrypt_token(protect("fake-desktop-token-中文")), "fake-desktop-token-中文")

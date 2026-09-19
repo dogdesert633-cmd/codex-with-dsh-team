@@ -86,7 +86,10 @@ new run -> new evidence unit, not automatically new session
 - monitor 绑定绝对 workspace；
 - Coordinator 管理启动、复用、端口和网页入口；
 - 用户不需要选择/记忆端口；
-- 同一 workspace 优先复用健康 monitor；
+- 同一 workspace 使用一支团队、一个 Monitor；团队内可有多个角色和 DSH session。
+  重复启动复用现有后台，不要求用户关联 Codex 对话或填写对话 ID；不同项目可分别运行。
+- 启动器自动管理可写运行目录，不把 `REMOTE_TO_DSH_HOME` 当成目标，也不要求用户手选 Team Home。
+  用户选择的 DSH 配置目录仅为只读来源。参数需要切换时先停止当前后台，不另开第二支团队；
 - 每个新的 Coordinator 对话第一次实际使用 DSH 时报告 Project / Workspace / actual URL / started|reused；URL 变化时再次报告。
 
 ## Monitor 数据模型方向
@@ -184,7 +187,7 @@ dispatch、launcher），也约束接收 dispatch 的 Agent。
   Toolkit-owned **Team Home**，默认 `%LOCALAPPDATA%\CodexDshTeam\runtimes\<toolkit-install-id>\`。
 - ownership 必须由 marker 证明（`schema` / `toolkitId` / `installId` / `createdAt` /
   `purpose`）；路径与 marker 都要做 reparse 与越界检查。
-- `-TeamDshHome` / `REMOTE_TO_DSH_HOME` 指向已有但无合法 marker、marker 属于别的
+- 显式 `-TeamDshHome` 指向已有但无合法 marker、marker 属于别的
   install、或看起来只是普通 DSH Home 时**必须停止**，绝不 adopt/patch。
 - 项目移动时用安装 manifest 里保存的稳定 install id 重新定位同一个 owned runtime；
   不得依据“目录名像 DSH Home”猜 ownership。

@@ -1,7 +1,7 @@
 ﻿#Requires -Version 5.1
 [CmdletBinding()]
 param(
-    [ValidateSet('Install', 'Prepare', 'Start', 'Discover', 'Stop')][string]$Action,
+    [ValidateSet('Install', 'Prepare', 'RemoveDependencies', 'Start', 'Discover', 'Stop')][string]$Action,
     [string]$Workspace,
     [string]$PackageRoot,
     [string]$UserDshHome,
@@ -28,6 +28,45 @@ function Get-MonitorProcesses {
     }
     return $items
 }
+function Assert-ProjectStopped {
+    if (@(Get-MonitorProcesses | Where-Object { $_.workspace -eq $workspacePath }).Count -gt 0) {
+        Write-Output '此项目的 Monitor 后台仍在运行，请先点击“停止后台”，再安装或卸载依赖。'
+        throw 'Monitor is running'
+    }
+}
+function Enter-ProjectOperation {
+    param([string]$CommonPath)
+    if ($PackageRoot) {
+        $CommonPath = Join-Path $PackageRoot 'payload\.agents\skills\mcp-to-dsh\scripts\DshTeamCommon.ps1'
+    }
+    . $CommonPath
+    return Enter-DshWorkspaceLaunch -Workspace $workspacePath
+}
+function Assert-DependencyTarget {
+    # The only removable target is this project's skill-local dependency tree.
+    # Reject redirected ancestors before reading manifests or traversing children.
+    $expected = [IO.Path]::GetFullPath((Join-Path $workspacePath '.agents\skills\mcp-to-dsh\node_modules'))
+    if ($modules -ne $expected -or -not $modules.StartsWith($workspacePath.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Dependency target is outside the selected project'
+    }
+    $probe = $modules
+    while ($probe) {
+        if (Test-Path -LiteralPath $probe) {
+            $item = Get-Item -LiteralPath $probe -Force
+            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                Write-Output '依赖路径经过目录联接或符号链接，已停止操作，避免影响其他目录。'
+                throw 'Redirected dependency path'
+            }
+        }
+        $probe = [IO.Path]::GetDirectoryName($probe)
+    }
+    $manifest = Get-Content -LiteralPath (Join-Path $skill 'package.json') -Raw | ConvertFrom-Json
+    if ($manifest.name -ne 'mcp-to-dsh-skill' -or -not (Test-Path -LiteralPath (Join-Path $skill 'package-lock.json') -PathType Leaf)) {
+        Write-Output '项目工具包不完整，请先安装或修复工具包。'
+        throw 'Not a toolkit dependency directory'
+    }
+}
+$operationLock = $null
 try {
     if ($Action -eq 'Discover') {
         ConvertTo-Json -InputObject @(Get-MonitorProcesses) -Compress
@@ -40,16 +79,54 @@ try {
         $workspacePath = (Resolve-Path -LiteralPath $Workspace).Path
     }
     $skill = Join-Path $workspacePath '.agents\skills\mcp-to-dsh'
+    $modules = [IO.Path]::GetFullPath((Join-Path $skill 'node_modules'))
     switch ($Action) {
         Install {
+            Assert-ProjectStopped
+            $operationLock = Enter-ProjectOperation -CommonPath (Join-Path $PackageRoot 'payload\.agents\skills\mcp-to-dsh\scripts\DshTeamCommon.ps1')
+            Assert-ProjectStopped
             & (Join-Path $PackageRoot 'install\Invoke-Toolkit.ps1') -Action Install -Target $workspacePath -PackageRoot $PackageRoot -NonInteractive -Yes -Progress
             exit $LASTEXITCODE
         }
         Prepare {
+            Assert-ProjectStopped
+            Assert-DependencyTarget
+            $operationLock = Enter-ProjectOperation -CommonPath (Join-Path $skill 'scripts\DshTeamCommon.ps1')
+            Assert-ProjectStopped
             Write-Output '项目文件已就绪。接下来安装固定版本的 DSH 及依赖；有 npm 缓存时优先复用。'
             $npm = Get-Command npm.cmd -ErrorAction Stop
             & $npm.Source ci --prefix $skill --prefer-offline --no-audit --no-fund
             exit $LASTEXITCODE
+        }
+        RemoveDependencies {
+            Assert-ProjectStopped
+            Assert-DependencyTarget
+            $operationLock = Enter-ProjectOperation -CommonPath (Join-Path $skill 'scripts\DshTeamCommon.ps1')
+            Assert-ProjectStopped
+            if (-not (Test-Path -LiteralPath $modules)) {
+                Write-Output '此项目没有 DSH 运行依赖，无需卸载。'
+                exit 0
+            }
+            if (-not (Test-Path -LiteralPath $modules -PathType Container)) { throw 'Dependency target is not a directory' }
+            Write-Output '正在检查所选项目的依赖目录。'
+            # Check the entire subtree without following junctions/symlinks.
+            $pending = New-Object 'System.Collections.Generic.Stack[string]'
+            $pending.Push($modules)
+            while ($pending.Count -gt 0) {
+                foreach ($entry in @(Get-ChildItem -LiteralPath $pending.Pop() -Force)) {
+                    if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                        Write-Output '依赖目录内含符号链接或目录联接，已保留全部内容，未执行卸载。'
+                        throw 'Redirected dependency entry'
+                    }
+                    if ($entry.PSIsContainer) { $pending.Push($entry.FullName) }
+                }
+            }
+            Assert-ProjectStopped
+            Assert-DependencyTarget
+            Write-Output '正在卸载 .agents/skills/mcp-to-dsh/node_modules。'
+            Remove-Item -LiteralPath $modules -Recurse -Force
+            if (Test-Path -LiteralPath $modules) { throw 'Dependency removal is incomplete' }
+            Write-Output 'DSH 运行依赖已卸载。项目文件、Skill、用户配置和任务记录均保留。'
         }
         Start {
             # A Monitor may have started while npm was preparing the project. Do not
@@ -63,113 +140,6 @@ try {
             . (Join-Path $skill 'scripts\DshTeamCommon.ps1')
             $identity = Get-DshTeamInstallIdentity
             $teamHome = Join-Path (Get-DshTeamHomeRoot) $identity.InstallId
-            # Keep the legacy launcher's interface, but use literal Win32 paths
-            # when PowerShell's Start-Process would expand brackets in log paths.
-            function Start-Process {
-                [CmdletBinding()]
-                param([string]$FilePath, [string[]]$ArgumentList, [string]$WorkingDirectory,
-                      [string]$WindowStyle, [string]$RedirectStandardOutput,
-                      [string]$RedirectStandardError, [switch]$PassThru)
-                $forward = @{}
-                foreach ($key in $PSBoundParameters.Keys) { $forward[$key] = $PSBoundParameters[$key] }
-                if (($WorkingDirectory + $RedirectStandardOutput + $RedirectStandardError).IndexOfAny([char[]]'[]') -lt 0) {
-                    Microsoft.PowerShell.Management\Start-Process @forward
-                    return
-                }
-                if (-not ('DshDesktopLiteralProcess' -as [type])) {
-                    Add-Type -TypeDefinition @'
-using System;
-using System.ComponentModel;
-using System.Diagnostics;
-using System.Runtime.InteropServices;
-using System.Text;
-public static class DshDesktopLiteralProcess {
-    [StructLayout(LayoutKind.Sequential)] struct Security {
-        public int size; public IntPtr descriptor;
-        [MarshalAs(UnmanagedType.Bool)] public bool inherit;
-    }
-    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] struct Startup {
-        public int size; public string reserved, desktop, title;
-        public int x, y, width, height, xChars, yChars, fill, flags;
-        public short show, reservedSize; public IntPtr reserved2, input, output, error;
-    }
-    [StructLayout(LayoutKind.Sequential)] struct Info {
-        public IntPtr process, thread; public int pid, tid;
-    }
-    [StructLayout(LayoutKind.Sequential)] struct StartupEx {
-        public Startup startup; public IntPtr attributes;
-    }
-    [DllImport("kernel32.dll", SetLastError=true)]
-    static extern bool InitializeProcThreadAttributeList(IntPtr list, int count, int flags, ref IntPtr size);
-    [DllImport("kernel32.dll", SetLastError=true)]
-    static extern bool UpdateProcThreadAttribute(IntPtr list, uint flags, IntPtr attribute,
-        IntPtr value, IntPtr size, IntPtr previous, IntPtr returnedSize);
-    [DllImport("kernel32.dll")] static extern void DeleteProcThreadAttributeList(IntPtr list);
-    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
-    static extern IntPtr CreateFileW(string name, uint access, uint share, ref Security security,
-                                    uint disposition, uint flags, IntPtr template);
-    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    static extern bool CreateProcessW(string app, StringBuilder command, IntPtr processSecurity,
-        IntPtr threadSecurity, bool inherit, uint flags, IntPtr environment, string cwd,
-        ref StartupEx startup, out Info info);
-    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
-    static void Close(IntPtr handle) {
-        if (handle != IntPtr.Zero && handle != new IntPtr(-1)) CloseHandle(handle);
-    }
-    static IntPtr Open(string path, bool input) {
-        Security security = new Security { size=Marshal.SizeOf(typeof(Security)), inherit=true };
-        IntPtr handle = CreateFileW(path, input ? 0x80000000u : 0x40000000u, 3,
-                                   ref security, input ? 3u : 2u, 0x80, IntPtr.Zero);
-        if (handle == new IntPtr(-1)) throw new Win32Exception(Marshal.GetLastWin32Error());
-        return handle;
-    }
-    public static Process Start(string app, string args, string cwd, string stdout, string stderr) {
-        StartupEx start = new StartupEx();
-        start.startup = new Startup { size=Marshal.SizeOf(typeof(StartupEx)), flags=0x101, show=0 };
-        Info info = new Info();
-        IntPtr handles = IntPtr.Zero;
-        bool initialized = false;
-        try {
-            start.startup.input=Open("NUL", true);
-            start.startup.output=Open(stdout, false);
-            start.startup.error=Open(stderr, false);
-            IntPtr size = IntPtr.Zero;
-            InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref size);
-            start.attributes = Marshal.AllocHGlobal(size);
-            if (!InitializeProcThreadAttributeList(start.attributes, 1, 0, ref size))
-                throw new Win32Exception(Marshal.GetLastWin32Error());
-            initialized = true;
-            handles = Marshal.AllocHGlobal(3 * IntPtr.Size);
-            Marshal.WriteIntPtr(handles, 0, start.startup.input);
-            Marshal.WriteIntPtr(handles, IntPtr.Size, start.startup.output);
-            Marshal.WriteIntPtr(handles, 2 * IntPtr.Size, start.startup.error);
-            // Inherit ONLY the explicit standard handles. Inheriting PowerShell's
-            // own output pipe would prevent the desktop from seeing completion.
-            if (!UpdateProcThreadAttribute(start.attributes, 0, new IntPtr(0x20002), handles,
-                new IntPtr(3 * IntPtr.Size), IntPtr.Zero, IntPtr.Zero))
-                throw new Win32Exception(Marshal.GetLastWin32Error());
-            // No shell, no console; only the Node process inherits these log handles.
-            if (!CreateProcessW(app, new StringBuilder("\"" + app + "\" " + args),
-                IntPtr.Zero, IntPtr.Zero, true, 0x08080000, IntPtr.Zero, cwd, ref start, out info))
-                throw new Win32Exception(Marshal.GetLastWin32Error());
-            Process process = Process.GetProcessById(info.pid);
-            IntPtr retained = process.Handle;
-            return process;
-        } finally {
-            Close(info.thread); Close(info.process);
-            if (initialized) DeleteProcThreadAttributeList(start.attributes);
-            if (start.attributes != IntPtr.Zero) Marshal.FreeHGlobal(start.attributes);
-            if (handles != IntPtr.Zero) Marshal.FreeHGlobal(handles);
-            Close(start.startup.input); Close(start.startup.output); Close(start.startup.error);
-        }
-    }
-}
-'@
-                }
-                $process = [DshDesktopLiteralProcess]::Start($FilePath, ($ArgumentList -join ' '), $WorkingDirectory, $RedirectStandardOutput, $RedirectStandardError)
-                if ($PassThru) { $process } else { $process.Dispose() }
-            }
             Write-Output '正在使用工具包专用运行目录；所选 DSH 配置目录保持只读。'
             & (Join-Path $skill 'scripts\start_dsh_team.ps1') -Workspace $workspacePath -UserDshHome $UserDshHome `
                 -TeamDshHome $teamHome -InstallId $identity.InstallId -InstallManifestPath $identity.ManifestPath `
@@ -219,4 +189,6 @@ public static class DshDesktopLiteralProcess {
     # Never echo a raw command line, credentials or arbitrary PowerShell exception text.
     [Console]::Error.WriteLine('操作未完成。请检查项目位置、Node/npm、DSH 配置和 Monitor 状态。')
     exit 1
+} finally {
+    if ($operationLock) { $operationLock.Dispose() }
 }

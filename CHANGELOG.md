@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.0 — 2026-09-19
+
+- 添加项目后自动检查运行条件，将安装、卸载依赖与启动 Monitor 分开。
+- 移除手动关联对话入口，按项目复用一支团队，保留团队内多个角色与会话。
+- 两个项目启动脚本不再将旧 `REMOTE_TO_DSH_HOME` 用作写入目标；显式非受管目标仍会被拒绝。
+- 启动过程使用项目锁，并在同步前复用现有后台，避免重复启动或打断现有任务。
+- 桌面与脚本共用后台进程启动实现，限制继承的句柄，避免后台占住启动器的输出管道或锁。
+- 桌面和随附工具包统一为 1.3.0；已有项目可单独更新工具包并保留运行依赖。
+
+
 All notable changes to the Codex × DSH Team Toolkit are recorded here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 

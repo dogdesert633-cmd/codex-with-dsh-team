@@ -64,6 +64,11 @@ framework-dependent and run on the .NET Framework 4.x that ships with Windows 10
 
 ## Your DSH configuration
 
+Desktop and project launchers automatically choose a toolkit-owned runtime directory. The legacy
+`REMOTE_TO_DSH_HOME` variable no longer selects the write target. The selected user configuration
+remains read-only. Repeated starts reuse the single team for this project; stop the background
+service before switching startup parameters.
+
 The toolkit runs the DSH version pinned in its own dependencies. It does not search your disk
 for an executable or ship a developer's provider configuration.
 

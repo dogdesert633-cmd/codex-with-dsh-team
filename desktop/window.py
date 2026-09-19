@@ -117,6 +117,9 @@ class MainWindow(QMainWindow):
         self.workers, self.polling, self.busy = set(), False, False
         self.process, self.queue, self.output_buffer = None, [], ""
         self._model_key = None
+        self._state_generation = 0
+        self._stop_targets = []
+        self._closing_after_stop = self._allow_exit = False
         self.decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(4)
@@ -205,7 +208,7 @@ class MainWindow(QMainWindow):
         self.logs.setFixedHeight(110)
         log_layout.addWidget(self.logs)
         main.addWidget(log_card)
-        self.footer = label("仅连接 127.0.0.1 的 Monitor  ·  关闭此窗口不会停止团队", "muted")
+        self.footer = label("关闭网页或结束 Codex 对话不会停止后台；删除项目之前，请点击“停止后台”。", "muted")
         main.addWidget(self.footer)
         self.show_page(0)
 
@@ -265,7 +268,7 @@ class MainWindow(QMainWindow):
         self.start_button = button("启动 Monitor", self.start_monitor, True)
         self.open_button = button("打开网页", self.open_monitor)
         self.sync_button = button("同步配置", self.sync_settings)
-        self.stop_button = button("停止", self.stop_monitor)
+        self.stop_button = button("停止后台", self.stop_monitor)
         self.stop_button.setObjectName("danger")
         for item in (self.start_button, self.open_button, self.sync_button, self.stop_button):
             actions.addWidget(item)
@@ -400,7 +403,7 @@ class MainWindow(QMainWindow):
         selected_row = 0
         for i, project in enumerate(self.store.projects):
             state = self.snapshots.get(project["workspace"], {})
-            status = "在线" if state.get("online") else "未连接"
+            status = "在线" if state.get("online") else ("后台仍在运行" if state.get("canStop") else "未连接")
             item = QListWidgetItem(f"{project['name']}\n{status}")
             item.setToolTip(project["workspace"])
             self.project_list.addItem(item)
@@ -420,12 +423,13 @@ class MainWindow(QMainWindow):
         self.conversation.setText("Codex 对话：" + ((project or {}).get("conversationLabel") or "尚未关联"))
         self.conversation.setToolTip((project or {}).get("conversationId", ""))
         self.address.setText(state.get("url") or "—")
-        self.connection.setText(("●  在线 · 概览" if state.get("limited") else "●  在线") if online else "○  未连接")
+        self.connection.setText(("●  在线 · 概览" if state.get("limited") else "●  在线") if online else ("●  后台仍在运行" if state.get("canStop") else "○  未连接"))
         self.start_button.setEnabled(bool(project) and not self.busy)
         self.start_button.setText("刷新连接" if online else "启动 Monitor")
         self.open_button.setEnabled(online)
-        for item in (self.sync_button, self.stop_button, self.apply_model, self.follow_default):
+        for item in (self.sync_button, self.apply_model, self.follow_default):
             item.setEnabled(usable)
+        self.stop_button.setEnabled(bool(project) and not self.busy)
         self.associate_button.setEnabled(bool(project) and not self.busy)
         self.stat_labels[0].setText(str(sum(bool(s.get("online")) for s in self.snapshots.values())))
         self.stat_labels[1].setText(str(sum(s.get("active", 0) for s in self.snapshots.values())))
@@ -477,14 +481,18 @@ class MainWindow(QMainWindow):
         self.apply_model.setEnabled(bool(self.model_combo.currentData()) and bool(self.state().get("online")) and not self.state().get("limited") and not self.busy)
 
     def refresh(self):
-        if self.polling or not self.store.projects:
+        if self.polling or self.busy or not self.store.projects:
             return
         self.polling = True
+        generation = self._state_generation
+        projects = list(self.store.projects)
         def complete(states):
+            if self.busy or generation != self._state_generation:
+                return
             self.snapshots = states
             self.reload_projects()
-            self.footer.setText(f"最近刷新 {datetime.now():%H:%M:%S}  ·  每 5 秒自动更新  ·  关闭此窗口不会停止团队")
-        self.run_worker(lambda: poll_projects(list(self.store.projects)), complete,
+            self.footer.setText(f"最近刷新 {datetime.now():%H:%M:%S}  ·  删除项目之前，请点击“停止后台”。")
+        self.run_worker(lambda: poll_projects(projects), complete,
                         done=lambda: setattr(self, "polling", False))
 
     def detect_monitors(self):
@@ -605,6 +613,7 @@ class MainWindow(QMainWindow):
         self.project_changed()
 
     def operation_done(self, message):
+        self._state_generation += 1
         self.set_busy(False)
         self.progress.setRange(0, 100)
         self.progress.setValue(100)
@@ -613,6 +622,8 @@ class MainWindow(QMainWindow):
         self.refresh()
 
     def operation_failed(self, message):
+        self._closing_after_stop = False
+        self._stop_targets = []
         self.set_busy(False)
         self.fail(message)
 
@@ -706,22 +717,37 @@ class MainWindow(QMainWindow):
 
     def stop_monitor(self):
         project = self.selected()
-        if not project or self.busy or not self.state().get("online"):
+        if not project or self.busy:
             return
         active = self.state().get("active", 0)
-        if QMessageBox.warning(self, "停止所选 Monitor", f"将停止 {project['name']} 的 Monitor。\n当前有 {active} 个进行中的任务，停止可能中断它们。", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        detail = f"当前有 {active} 个进行中的任务。" if self.state().get("online") and not self.state().get("limited") else "当前无法完整读取任务状态。"
+        if QMessageBox.warning(self, "停止项目后台", f"将停止 {project['name']} 的 Monitor 及其子进程，释放文件占用。\n{detail}未完成的任务会被中断。", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
             return
-        workspace = project["workspace"]
-        self.set_busy(True, "正在核对所选 Monitor")
-        def checked(command):
-            self.queue = [("停止所选 Monitor", command)]
+        self.stop_projects([project])
+
+    def stop_projects(self, projects, exit_after=False):
+        try:
+            self.queue = [(f"停止 {project['name']} 的后台", stop_command(project["workspace"])) for project in projects]
+            self._stop_targets = [project["workspace"] for project in projects]
+            self._closing_after_stop = exit_after
+            self.set_busy(True, "正在停止项目后台并检查文件占用")
             self.next_process()
-        self.run_worker(lambda: stop_command(workspace), checked, self.operation_failed)
+        except DesktopError as error:
+            self.operation_failed(str(error))
 
     def next_process(self):
         if not self.queue:
-            self.operation_done("操作完成，正在更新项目状态。")
+            stopped = bool(self._stop_targets)
+            for workspace in self._stop_targets:
+                self.snapshots[workspace] = {"online": False, "canStop": False, "active": 0, "runs": [], "url": "",
+                                             "error": "后台已停止，日志占用已释放。现在可以删除或移动项目。"}
+            self._stop_targets = []
+            self.operation_done("后台已停止，日志占用已释放。" if stopped else "操作完成，正在更新项目状态。")
+            if self._closing_after_stop:
+                self._allow_exit = True
+                self._closing_after_stop = False
+                self.close()
             return
         title, command = self.queue.pop(0)
         self.job_label.setText(title)
@@ -776,10 +802,33 @@ class MainWindow(QMainWindow):
         else:
             self.next_process()
 
+    def confirm_background_exit(self, count):
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("退出桌面控制台")
+        dialog.setText(f"还有 {count} 个项目后台在运行。")
+        dialog.setInformativeText("关闭网页或结束 Codex 对话不会停止后台。\n停止后台会中断未完成的任务，并释放项目文件占用。")
+        stop = dialog.addButton("停止后台并退出", QMessageBox.ButtonRole.AcceptRole)
+        keep = dialog.addButton("保留后台", QMessageBox.ButtonRole.DestructiveRole)
+        cancel = dialog.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        dialog.setDefaultButton(stop)
+        dialog.setEscapeButton(cancel)
+        dialog.exec()
+        return "stop" if dialog.clickedButton() == stop else ("keep" if dialog.clickedButton() == keep else "cancel")
+
     def closeEvent(self, event):
         if self.busy:
             self.log("正在完成安装或配置操作，请等待完成后再关闭。")
             event.ignore()
             return
+        running = [project for project in self.store.projects if any(self.snapshots.get(project["workspace"], {}).get(key) for key in ("online", "canStop"))]
+        if running and not self._allow_exit:
+            choice = self.confirm_background_exit(len(running))
+            if choice == "cancel":
+                event.ignore()
+                return
+            if choice == "stop":
+                event.ignore()
+                self.stop_projects(running, exit_after=True)
+                return
         self.timer.stop()
         super().closeEvent(event)

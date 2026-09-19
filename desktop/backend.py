@@ -213,7 +213,7 @@ def bridge_command(action, workspace=None, source=None, package=None, pid=None):
     return args
 
 
-def discover_monitors():
+def monitor_processes():
     """Enumerate only running Node monitor processes; never scan directories or port ranges."""
     try:
         result = subprocess.run(bridge_command("Discover"), capture_output=True, timeout=12,
@@ -223,11 +223,15 @@ def discover_monitors():
         data = json.loads(result.stdout.decode("utf-8-sig"))
         if not isinstance(data, list):
             raise ValueError()
-        return [str(Path(row["workspace"]).resolve()) for row in data
-                if isinstance(row, dict) and Path(row.get("workspace", "")).is_dir()
-                and (Path(row["workspace"]) / "artifacts/dsh-monitor/server.json").is_file()]
+        return [{"workspace": str(Path(row["workspace"]).resolve()), "pid": row["pid"]} for row in data
+                if isinstance(row, dict) and isinstance(row.get("workspace"), str)
+                and Path(row["workspace"]).is_absolute() and isinstance(row.get("pid"), int) and row["pid"] > 0]
     except (OSError, ValueError, subprocess.TimeoutExpired) as error:
         raise DesktopError("检测没有完成，可通过“添加项目”选择目录。") from error
+
+
+def discover_monitors():
+    return list(dict.fromkeys(row["workspace"] for row in monitor_processes() if Path(row["workspace"]).is_dir()))
 
 
 def decrypt_token(encoded):
@@ -353,6 +357,10 @@ class MonitorClient:
 
 def poll_projects(projects):
     results = {}
+    try:
+        processes = monitor_processes()
+    except DesktopError:
+        processes = []
     for project in projects:
         path = project["workspace"]
         try:
@@ -361,6 +369,11 @@ def poll_projects(projects):
             results[path] = {"online": False, "active": 0, "runs": [], "error": str(error), "url": ""}
         except Exception:
             results[path] = {"online": False, "active": 0, "runs": [], "error": "暂时无法读取 Monitor 状态。", "url": ""}
+        owned = [row for row in processes if same_path(row["workspace"], path)]
+        results[path]["canStop"] = bool(owned)
+        results[path]["processCount"] = len(owned)
+        if owned and not results[path].get("online"):
+            results[path]["error"] = "后台仍在运行，连接记录缺失或服务未响应。可点击“停止后台”释放文件占用。"
     return results
 
 
@@ -379,20 +392,21 @@ def readiness(workspace):
 
 
 def existing_monitor(workspace):
+    # Missing records must not allow a second bootstrap while a live process
+    # still owns the workspace/logs.
     if not (Path(workspace) / "artifacts/dsh-monitor/server.json").is_file():
+        if any(same_path(row["workspace"], workspace) for row in monitor_processes()):
+            raise DesktopError("此项目的后台仍在运行，但连接记录缺失。请先点击“停止后台”，再重新启动。")
         return None
     try:
         return MonitorClient(workspace).snapshot()
     except OfflineError:
+        if any(same_path(row["workspace"], workspace) for row in monitor_processes()):
+            raise DesktopError("项目后台未响应。请先点击“停止后台”清理进程，再重新启动。") from None
         return None
 
 
 def stop_command(workspace):
-    client = MonitorClient(workspace)
-    client.verify()
-    if not client.authorized:
-        raise DesktopError("旧版 Monitor 只能查看概览，请在它原来的启动窗口中停止。")
-    pid = client.record.get("pid")
-    if not isinstance(pid, int) or pid <= 0:
-        raise DesktopError("Monitor 记录缺少可靠的进程标识，无法从桌面停止。")
-    return bridge_command("Stop", workspace, pid=pid)
+    # The bridge revalidates local OS process identity and waits for release.
+    # Stopping must also work when HTTP, DPAPI or server.json is unavailable.
+    return bridge_command("Stop", workspace)

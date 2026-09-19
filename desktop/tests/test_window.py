@@ -34,6 +34,7 @@ class WindowTests(unittest.TestCase):
         self.window.pool.waitForDone(10000)
         APP.processEvents()
         self.window.busy = False
+        self.window._allow_exit = True
         self.window.close()
         self.window.deleteLater()
         APP.processEvents()
@@ -73,10 +74,11 @@ class WindowTests(unittest.TestCase):
         self.window.project_changed()
         self.assertEqual(self.window.model_combo.currentData(), "m1")
 
-    def test_legacy_monitor_can_open_but_not_mutate(self):
+    def test_legacy_monitor_can_stop_locally_but_not_modify_model_or_sync(self):
         self.connected(limited=True)
         self.assertTrue(self.window.open_button.isEnabled())
-        for item in (self.window.sync_button, self.window.stop_button, self.window.apply_model, self.window.follow_default):
+        self.assertTrue(self.window.stop_button.isEnabled())
+        for item in (self.window.sync_button, self.window.apply_model, self.window.follow_default):
             self.assertFalse(item.isEnabled())
         self.assertIn("概览", self.window.connection.text())
 
@@ -139,6 +141,42 @@ class WindowTests(unittest.TestCase):
         self.window.close()
         self.assertTrue(self.window.isVisible())
         self.window.set_busy(False)
+
+    def test_offline_process_has_visible_stop_button_and_status(self):
+        self.window.snapshots[str(self.root)] = {"online": False, "canStop": True, "active": 0, "runs": []}
+        self.window.project_changed()
+        self.assertIn("后台仍在运行", self.window.connection.text())
+        self.assertTrue(self.window.stop_button.isEnabled())
+
+    def test_close_can_keep_background_or_cancel(self):
+        self.connected()
+        with patch.object(self.window, "confirm_background_exit", return_value="cancel"), patch.object(self.window, "stop_projects") as stop:
+            self.window.close()
+            self.assertTrue(self.window.isVisible())
+            stop.assert_not_called()
+        with patch.object(self.window, "confirm_background_exit", return_value="keep"), patch.object(self.window, "stop_projects") as stop:
+            self.window.close()
+            self.assertFalse(self.window.isVisible())
+            stop.assert_not_called()
+
+    def test_close_with_stop_waits_for_completion_then_exits(self):
+        self.connected()
+        with patch.object(self.window, "confirm_background_exit", return_value="stop"), patch("window.stop_command", return_value=[sys.executable, "-c", "import time;time.sleep(.1)"]):
+            self.window.close()
+            self.assertTrue(self.window.isVisible())
+            self.assertTrue(self.window.busy)
+            self.wait_until(lambda: not self.window.isVisible())
+        self.assertFalse(self.window.state()["online"])
+        self.assertIn("占用已释放", self.window.logs.toPlainText())
+
+    def test_failed_stop_keeps_desktop_open(self):
+        self.connected()
+        with patch.object(self.window, "confirm_background_exit", return_value="stop"), patch("window.stop_command", return_value=[sys.executable, "-c", "raise SystemExit(7)"]):
+            self.window.close()
+            self.wait_until(lambda: not self.window.busy)
+        self.assertTrue(self.window.isVisible())
+        self.assertFalse(self.window._allow_exit)
+        self.assertFalse(self.window._closing_after_stop)
 
 
 if __name__ == "__main__":

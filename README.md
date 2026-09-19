@@ -1,6 +1,6 @@
 # Codex × DSH Team Toolkit
 
-> This branch adds a **v1.2.0 PyQt6 desktop console** for local Monitor discovery, DSH settings,
+> This branch adds a **v1.2.1 PyQt6 desktop console** for local Monitor discovery, DSH settings,
 > synchronization and conversation labels. The v1.1.0 toolkit implementation is preserved.
 > See the [desktop guide](desktop/README.md).
 

@@ -18,14 +18,11 @@ Codex breaks down tasks, leads the team and checks the results; DSH carries out 
 
 **4 agents · 3 running · 1 completed task.** Select a team member on the left to follow its instructions, replies and elapsed time on the right. Captured from the actual Monitor with demonstration tasks, models and sessions.
 
-<details>
-<summary>Desktop console: installation, settings and project management</summary>
+## Desktop console: installation, settings and project management
 
 ![Desktop console showing project, team and model status, with author credit at the bottom right](docs/assets/desktop-overview.png)
 
 *Actual application interface with demonstration tasks and models. The desktop interface is currently in Simplified Chinese.*
-
-</details>
 
 ## What you can do
 

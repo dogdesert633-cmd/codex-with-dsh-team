@@ -60,8 +60,8 @@ deliberately want only the rules-only part.
 2. **Extract the whole archive.** The installer needs the complete folder, not just the EXE.
 3. **Run `CodexDshTeamToolkit.Install.exe`** in the extracted folder. If you prefer a script, run
    `Install.cmd` instead.
-4. **Choose an existing project folder** in the Windows folder picker.
-5. **Review the list of files and confirm.** Nothing is written before you confirm.
+4. **Click Browse and choose an existing project folder.** The picker initially opens at the installer's directory; an empty project is fine.
+5. **Click Check Installation, then Start Installation.** The window shows progress, logs and an explicit success message, with a button to open your project. Nothing is written to the project before confirmation.
 
 Afterwards the project contains:
 
@@ -79,7 +79,7 @@ modified or added yourself.
 Before the first DSH-backed task you need:
 
 - Windows 10 or 11;
-- **Node ≥ 22.19.0** and **Git**;
+- **Node ≥ 22.19.0**; Git is optional, with no repository initialization or initial commit required;
 - a DSH installation that already works, with your provider, model and credentials configured.
 
 Then (replace the path with your own project):
@@ -94,9 +94,12 @@ Set-Location '..\..\..'
 .\start_dsh_team.cmd
 ```
 
-The launcher prepares the configuration it needs on first start, using the DSH you already have
-installed. There is nothing to write by hand. If you want to choose a specific setup, or something
-does not start, see [docs/CONFIGURATION.md](docs/CONFIGURATION.md) and
+The launcher uses the toolkit's pinned DSH dependency and **your own settings**. If it cannot
+find your configuration, a folder picker asks for the DSH configuration directory containing
+`settings.yaml`. Choose the folder once; there is no path or command to type. The location is
+remembered, settings are synced at startup and checked before dispatch, and new tasks follow your
+latest `agent-default-model`. Developer provider settings and credentials are never packaged.
+See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) and
 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
 ## Things worth knowing
@@ -106,13 +109,13 @@ does not start, see [docs/CONFIGURATION.md](docs/CONFIGURATION.md) and
   cost money. See [docs/SECURITY.md](docs/SECURITY.md) for exactly what is and is not sent.
 - **DSH can run commands and read or write files.** Runs default to Full Access and tool requests
   are approved automatically — that is what lets it do real work, and it is not an OS-level sandbox.
-  Check the changes with Git and review the diff afterwards; details in
+  Review the changes afterwards, using a Git diff when available; details in
   [docs/SECURITY.md](docs/SECURITY.md).
 - **Run output is not ignored for you.** A run writes `artifacts/dsh-monitor/`,
   `artifacts/dsh-gui-runs/` and `.dsh/contracts/` in the project. The installer never edits your
   `.gitignore`; add those paths yourself before running DSH if you do not want them tracked.
 - **Early version.** v1.1.0 is a pre-release offered for evaluation — feedback and issue reports are
-  welcome. Real model calls, the GUI install flow and some permission scenarios still need more
+  welcome. Real model calls and some permission scenarios still need more
   validation; see [docs/INSTALLATION.md](docs/INSTALLATION.md) and
   [docs/SECURITY.md](docs/SECURITY.md).
 

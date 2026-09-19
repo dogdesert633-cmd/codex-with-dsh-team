@@ -10,7 +10,19 @@ import {
   resolveAcpModelValue,
   validateModelSelection,
 } from "../src/model-settings.mjs";
-import { shouldAcceptModelProjection } from "../public/model-revision.js";
+import { shouldAcceptModelProjection, modelFormSelection } from "../public/model-revision.js";
+
+test("model form follows the configured default and never silently selects the first provider", () => {
+  const providers = [
+    { id: "chen-lab", models: [{ id: "first-model" }] },
+    { id: "ocg-ds", models: [{ id: "deepseek-v4.1-flash" }] },
+  ];
+  const dshDefault = { provider: "ocg-ds", model: "deepseek-v4.1-flash" };
+  assert.deepEqual(modelFormSelection({ providers, dshDefault }), { ...dshDefault, valid: true });
+  assert.deepEqual(modelFormSelection({ providers }), { provider: "", model: "", valid: false });
+  assert.deepEqual(modelFormSelection({ providers, dshDefault: { provider: "ocg-ds", model: "removed" } }),
+    { provider: "ocg-ds", model: "", valid: false });
+});
 
 const SETTINGS = `
 llm-pi-ai:

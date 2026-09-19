@@ -38,6 +38,8 @@ param(
     [int]$DshCheckTimeoutSeconds = 300,
     [switch]$SkipSync,
     [switch]$SkipDshCheck,
+    [switch]$NonInteractive,
+    [switch]$SelectDshHome,
     [switch]$NoBrowser
 )
 
@@ -165,9 +167,6 @@ if (-not (Test-Path -LiteralPath $Workspace -PathType Container)) {
     throw "工作区不存在: $Workspace"
 }
 $workspacePath = (Resolve-Path -LiteralPath $Workspace).Path
-if (-not (Test-Path -LiteralPath (Join-Path $workspacePath '.git') -PathType Container)) {
-    throw "工作区不是 Git 仓库（缺少 .git）: $workspacePath。DSH Team 依赖 Git evidence，请在本项目根目录运行。"
-}
 $script:Report.Project = Split-Path -Leaf $workspacePath
 $script:Report.Workspace = $workspacePath
 Write-Ok "Project=$($script:Report.Project)"
@@ -175,7 +174,7 @@ Write-Ok "Project=$($script:Report.Project)"
 # ---------------------------------------------------------------------------
 # 2. Resolve the runtimes the Team scripts need
 # ---------------------------------------------------------------------------
-Write-Step '解析 Node / npm / Git'
+Write-Step '解析 Node / npm'
 $node = Get-Command node.exe -ErrorAction SilentlyContinue
 if (-not $node) { throw '找不到 node.exe。请安装 Node.js 并确保它在 PATH 中。' }
 $npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
@@ -183,10 +182,9 @@ if (-not $npm) { $npm = Get-Command npm -ErrorAction SilentlyContinue }
 if (-not $npm) { throw '找不到 npm。请安装 Node.js 并确保 npm 在 PATH 中。' }
 $git = Get-Command git.exe -ErrorAction SilentlyContinue
 if (-not $git) { $git = Get-Command git -ErrorAction SilentlyContinue }
-if (-not $git) { throw '找不到 git。DSH Team 的 evidence 与 Reviewer 工作区都依赖 Git。' }
 $script:Report.Node = "$($node.Source) ($(& node --version))"
-$script:Report.Git = "$($git.Source) ($(& git --version))"
-Write-Ok "node $(& node --version) / git $(& git --version)"
+$script:Report.Git = if ($git) { '可用（差异记录为可选辅助）' } else { '未安装（不影响 DSH 使用）' }
+Write-Ok "node $(& node --version)"
 
 if (-not (Test-Path -LiteralPath $monitorScript -PathType Leaf)) {
     throw "缺少 Monitor 启动脚本: $monitorScript"
@@ -206,36 +204,8 @@ if (-not (Test-Path -LiteralPath (Join-Path $skillRoot 'node_modules'))) {
 # ---------------------------------------------------------------------------
 Write-Step '定位用户正在使用的 DSH 配置'
 
-function Resolve-DshHomeCandidate {
-    param([string]$Path)
-    if (-not $Path) { return $null }
-    $expanded = [Environment]::ExpandEnvironmentVariables($Path)
-    if (-not (Test-Path -LiteralPath $expanded -PathType Container)) { return $null }
-    return (Resolve-Path -LiteralPath $expanded).Path
-}
-
-function Test-IsWorkingDshHome {
-    param([Parameter(Mandatory)][string]$Path)
-    return ((Test-Path -LiteralPath (Join-Path $Path 'settings.yaml') -PathType Leaf) -and
-        (Test-Path -LiteralPath (Join-Path $Path '.credentials.yaml') -PathType Leaf))
-}
-
-$userHomeCandidates = New-Object System.Collections.Generic.List[string]
-if ($UserDshHome) { $userHomeCandidates.Add($UserDshHome) }
-foreach ($candidate in @($env:DSH_HOME, [Environment]::GetEnvironmentVariable('DSH_HOME', 'User'),
-        [Environment]::GetEnvironmentVariable('DSH_HOME', 'Machine'),
-        (Join-Path $HOME '.dsh'))) {
-    if ($candidate) { $userHomeCandidates.Add($candidate) }
-}
-
-$resolvedUserHome = $null
-foreach ($candidate in $userHomeCandidates) {
-    $path = Resolve-DshHomeCandidate -Path $candidate
-    if ($path -and (Test-IsWorkingDshHome -Path $path)) { $resolvedUserHome = $path; break }
-}
-if (-not $resolvedUserHome) {
-    throw ("找不到可用的用户 DSH 配置。已尝试: {0}`n请设置 DSH_HOME 指向包含 settings.yaml 与 .credentials.yaml 的 DSH home。" -f ($userHomeCandidates -join ', '))
-}
+$resolvedUserHome = Resolve-DshUserHome -Requested $UserDshHome -InitialDirectory $workspacePath `
+    -AllowPrompt:(-not $NonInteractive) -SelectAgain:$SelectDshHome
 $script:Report.UserDshHome = $resolvedUserHome
 Write-Ok "用户 DSH home = $resolvedUserHome (只读来源，绝不写入)"
 
@@ -424,7 +394,16 @@ function Stop-OwnedMonitorForConfigRefresh {
     Write-Note '检测到配置变化，已仅刷新当前 workspace 的 Monitor。'
 }
 
-if (-not $SkipSync -and $syncResult -and @($syncResult.Changed).Count -gt 0) {
+$sourceChanged = $false
+$previousRecordPath = Join-Path $workspacePath 'artifacts\dsh-monitor\server.json'
+if (Test-Path -LiteralPath $previousRecordPath -PathType Leaf) {
+    try {
+        $previousRecord = [IO.File]::ReadAllText($previousRecordPath) | ConvertFrom-Json
+        $previousSource = $previousRecord.PSObject.Properties['dsh_user_home']
+        $sourceChanged = -not $previousSource -or [string]$previousSource.Value -ne $resolvedUserHome
+    } catch { $sourceChanged = $false }
+}
+if ($sourceChanged -or (-not $SkipSync -and $syncResult -and @($syncResult.Changed).Count -gt 0)) {
     Stop-OwnedMonitorForConfigRefresh -WorkspacePath $workspacePath -DshHomePath $resolvedTeamHome
 }
 

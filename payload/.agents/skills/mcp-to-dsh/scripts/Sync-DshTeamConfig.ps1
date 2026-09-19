@@ -126,7 +126,12 @@ function Get-DshModelSelection {
         if (-not $inModels) { continue }
 
         $idMatch = [regex]::Match($line, ('^\s{{{0}}}-\s+id:\s*(\S+)\s*$' -f ($providersIndent + 6)))
-        if ($idMatch.Success) { $currentModel = $idMatch.Groups[1].Value; continue }
+        if ($idMatch.Success) {
+            $modelId = $idMatch.Groups[1].Value.Trim('"', "'")
+            if (-not $script:seenModels.Contains($modelId)) { $script:seenModels.Add($modelId) }
+            $currentModel = $null
+            continue
+        }
         $nameMatch = [regex]::Match($line, ('^\s{{{0}}}name:\s*(\S+)\s*$' -f ($providersIndent + 8)))
         if ($nameMatch.Success -and $currentModel -and -not $script:seenModels.Contains($nameMatch.Groups[1].Value)) {
             $script:seenModels.Add($nameMatch.Groups[1].Value)

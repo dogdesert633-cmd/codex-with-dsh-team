@@ -5,7 +5,7 @@
     # Team 运行时 Home。它必须是 Toolkit-owned Team Home（带合法 marker）；无 marker 的已有
     # 目录、属于别的 install 的目录、或看起来像普通 DSH Home 的目录都会被拒绝。
     [string]$DshHome,
-    # 主（用户交互式）DSH Home：只用于 Monitor 的“一键同步设置”按钮，作为只读同步来源。
+    # 主（用户交互式）DSH Home：作为默认模型和自动同步的只读来源。
     [string]$UserDshHome,
     # Toolkit-owned Team Home 的默认根目录；为空时使用 %LOCALAPPDATA%\CodexDshTeam\runtimes。
     [string]$TeamHomeRoot,
@@ -20,6 +20,7 @@
     [switch]$AutoPort,
     [ValidateRange(1, 200)]
     [int]$PortSearchSpan = 50,
+    [switch]$NonInteractive,
     [switch]$OpenBrowser
 )
 
@@ -75,22 +76,10 @@ $resolvedTeam = Resolve-DshTeamHome -Requested $teamHomeCandidate -Workspace $wo
     -InstallId $InstallId -TeamHomeRoot $TeamHomeRoot -AllowCreate
 $dshHomePath = $resolvedTeam.TeamDshHome
 
-# 主（用户）DSH Home：一键同步的来源。允许 -UserDshHome、DSH_USER_HOME，或退一步的 DSH_HOME。
-# 只有确实存在 settings.yaml 且与 Team Home 不同的候选才会透传给 server：同一个目录绝不会被
-# 同步到它自己，缺失时只是让 Monitor 的同步按钮报告“未配置”，dispatch 行为完全不受影响。
-if (-not $UserDshHome) { $UserDshHome = $env:DSH_USER_HOME }
-if (-not $UserDshHome) { $UserDshHome = $env:DSH_HOME }
-$resolvedUserDshHome = $null
-if ($UserDshHome) {
-    $userCandidate = $null
-    try { $userCandidate = (Resolve-Path -LiteralPath $UserDshHome -ErrorAction Stop).Path } catch { $userCandidate = $null }
-    if ($userCandidate -and -not (Test-Path -LiteralPath (Join-Path $userCandidate 'settings.yaml') -PathType Leaf)) { $userCandidate = $null }
-    if ($userCandidate -and $userCandidate -eq $dshHomePath) {
-        Write-Warning '主 DSH Home 与 Team DSH Home 是同一目录，已忽略一键同步来源（不会把配置同步到自己）。'
-        $userCandidate = $null
-    }
-    $resolvedUserDshHome = $userCandidate
-}
+# Both launchers resolve the same authoritative current-user configuration.
+$resolvedUserDshHome = Resolve-DshUserHome -Requested $UserDshHome -InitialDirectory $workspacePath `
+    -AllowPrompt:($OpenBrowser -and -not $NonInteractive)
+Assert-UserDshHomeReadOnlySource -UserDshHome $resolvedUserDshHome -TeamDshHome $dshHomePath | Out-Null
 # 透传给 server.mjs 的固定参数片段；两个启动分支共用，避免前台/后台行为分叉。
 $userHomeArgs = @()
 $userHomeArgument = ''
@@ -128,6 +117,8 @@ function Test-MonitorHealthMatch {
     if ($Health.service -ne 'dsh-team-monitor') { return $false }
     if ($Health.workspace -ne $workspacePath) { return $false }
     if ($Health.dshHome -ne $dshHomePath) { return $false }
+    $sourceProperty = $Health.PSObject.Properties['dshUserHome']
+    if (-not $sourceProperty -or [string]$sourceProperty.Value -ne $resolvedUserDshHome) { return $false }
     return ((Get-HealthProfile -Health $Health) -eq $profileName)
 }
 
@@ -289,6 +280,9 @@ else {
         }
         if ((Get-HealthProfile -Health $health) -ne $profileName) {
             throw "Port $selectedPort is occupied by a DSH monitor for profile '$(Get-HealthProfile -Health $health)', but profile '$profileName' was requested. Use -AutoPort or choose another port."
+        }
+        if (-not (Test-MonitorHealthMatch -Health $health)) {
+            throw '此 Monitor 使用另一份用户 DSH 配置，不能复用。请重新运行项目启动器。'
         }
         $url = "http://127.0.0.1:$selectedPort"
         Open-MonitorPage -Url $url

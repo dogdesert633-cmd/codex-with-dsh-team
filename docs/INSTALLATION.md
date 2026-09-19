@@ -31,13 +31,14 @@ One run installs all three Skills into an existing project:
 2. **Extract it completely.** The installer needs the whole package tree, not just the EXE.
 3. **Run `CodexDshTeamToolkit.Install.exe`** in the package root — the normal GUI entry — or
    `Install.cmd` if you prefer the zero-dependency script.
-4. **Pick your existing project root** in the folder picker. Cancelling the picker exits
-   immediately and writes nothing.
-5. **Review the per-file Install Plan and confirm.** Nothing is written before that point: no state
+4. **Click Browse and pick your existing project root.** The picker starts from the EXE directory.
+   Cancelling the picker keeps the installer open and leaves the selection unchanged.
+5. **Click Check Installation, review the plan, then click Start Installation.** Nothing is written before that point: no state
    directory, lock, runtime directory or other write happens earlier. Unattended runs pass `--yes` /
    `-Yes`; a non-interactive run without it exits `8` and writes nothing.
 
-The install finishes with a summary of the managed files.
+The window shows live phase progress and a scrollable log. Successful installation ends with
+an explicit success message and an Open Project button. Errors stay visible in the window.
 
 What lands in the project, in one pass:
 
@@ -77,13 +78,18 @@ project and are never recorded in the ledger.
 The installer only copies files. Before the first Team/Monitor run, three things must be ready on
 the machine:
 
-1. **Node ≥ 22.19.0 and Git.** The launcher only requires your workspace to be a Git repository
-   (a `.git` directory); it stops with a clear message when it is not.
+1. **Node ≥ 22.19.0.** Git is optional. An ordinary or empty project directory works; the toolkit
+   does not require or create a repository or an initial commit.
 2. **Your own working DSH setup.** A user DSH Home containing `settings.yaml` and
    `.credentials.yaml`, i.e. the provider, model and credentials you already use interactively.
    The Team runtime is synced *from* that Home, which stays read-only, and the toolkit never
    configures a provider or writes credentials for you. `npm ci` alone is not enough to run a
    model: the DSH child agents use the provider and model configured in your DSH Home.
+   If automatic detection cannot find that Home, double-clicking the launcher opens a folder
+   picker labelled **Choose the DSH configuration folder containing settings.yaml**. Select the
+   folder, not the file. The validated location is remembered in current-user local state.
+   No whole-disk search is performed. Future starts sync from that location; dispatch checks for
+   changes and blocks on sync failure instead of silently using an old default.
 3. **The payload dependencies, once.** Replace the example path `D:\projects\my-project` with the
    project root you picked in the installer — the quotes keep paths with spaces working — then
    install the pinned tree, go back to the project root and start the launcher:
@@ -236,9 +242,9 @@ The uninstaller prints an Uninstall Plan, then deletes only ownership-proven fil
 
 ## Known limitations
 
-- The GUI folder picker, real provider runs and some ACL / credential / partial-permission edge
-  cases are not fully verified; the command line (`Install.cmd -Target <project>`) is the most
-  exercised path.
+- The installer GUI has local checks for planning, installation, progress, success feedback and
+  conflict handling. Real provider runs, desktop/DPI variations and some ACL / credential /
+  partial-permission edge cases still need broader testing.
 - First start prepares the ACP profile automatically and the installer pre-places none; see
   [First start](#first-start-the-acp-profile-is-prepared-at-runtime) for what must be ready first.
 

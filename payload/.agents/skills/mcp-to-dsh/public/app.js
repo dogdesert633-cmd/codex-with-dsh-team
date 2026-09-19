@@ -1,4 +1,4 @@
-import { shouldAcceptModelProjection } from "./model-revision.js";
+import { shouldAcceptModelProjection, modelFormSelection } from "./model-revision.js";
 
 // DSH Team Monitor frontend.
 //
@@ -2544,6 +2544,8 @@ function renderModelOptions(preferredModel = null) {
   }
   if (preferredModel && [...modelName.options].some((option) => option.value === preferredModel)) {
     modelName.value = preferredModel;
+  } else if (preferredModel) {
+    modelName.selectedIndex = -1;
   }
   modelName.disabled = modelName.options.length === 0;
   const selected = (provider?.models ?? []).find((item) => item.id === modelName.value);
@@ -2568,19 +2570,20 @@ function renderModelSettings(value) {
     option.disabled = !provider.models?.length;
     modelProvider.append(option);
   }
-  const firstAvailable = providers.find((provider) => provider.models?.length)?.id ?? "";
-  modelProvider.value = providers.some((provider) => provider.id === effective?.provider && provider.models?.length)
-    ? effective.provider
-    : firstAvailable;
-  modelProvider.disabled = !firstAvailable;
+  const selected = modelFormSelection(modelSettings);
+  const hasAvailable = providers.some((provider) => provider.models?.length);
+  modelProvider.value = selected.provider;
+  modelProvider.disabled = !hasAvailable;
   renderModelOptions(effective?.model ?? null);
   modelCurrent.textContent = effective
     ? `${effective.provider} / ${effective.model}${modelSettings?.mode === "override" ? " · Override" : " · DSH 默认"}`
     : "模型配置不可用";
-  modelMessage.textContent = modelSettings?.error ?? "供应商与模型来自当前 DSH settings.yaml。";
-  modelMessage.dataset.state = modelSettings?.error ? "error" : "ready";
+  modelMessage.textContent = modelSettings?.error ?? (selected.valid
+    ? "跟随默认时读取主 DSH 配置；下一次任务会自动同步已更改的设置。"
+    : "默认模型不可用，请检查 DSH 配置或明确选择供应商和模型。");
+  modelMessage.dataset.state = modelSettings?.error || !selected.valid ? "error" : "ready";
   modelFollowDefault.disabled = modelSettings?.mode === "dsh-default";
-  modelForm.querySelector('[type="submit"]').disabled = !firstAvailable;
+  modelForm.querySelector('[type="submit"]').disabled = !modelProvider.value || !modelName.value;
   // 同步按钮的可用性来自 server：只有主/Team Home 都配置且不同时才可点，原因直接写进提示，
   // 不让用户去猜为什么按钮没反应。
   const availability = modelSettings?.settingsSync ?? null;
@@ -2626,7 +2629,13 @@ async function saveModelPreference(selection) {
   }
 }
 
-modelProvider.addEventListener("change", () => renderModelOptions());
+modelProvider.addEventListener("change", () => {
+  renderModelOptions();
+  modelForm.querySelector('[type="submit"]').disabled = !modelProvider.value || !modelName.value;
+});
+modelName.addEventListener("change", () => {
+  modelForm.querySelector('[type="submit"]').disabled = !modelProvider.value || !modelName.value;
+});
 modelForm.addEventListener("submit", (event) => {
   event.preventDefault();
   if (!modelProvider.value || !modelName.value) return;

@@ -8,6 +8,10 @@
 
 ## 2. 依赖
 
+运行需要 Node/npm、已有的项目文件夹与可用的 DSH 配置。Git 是可选的差异记录工具；
+普通文件夹可直接启动、spawn 与 follow-up，不要求初始化仓库或提交。Git 不可用时跳过对应记录，
+仍保留 session/run、工具输出与验证结果。不要为获取 Git 证据擅自修改用户的版本管理状态。
+
 ```powershell
 $skillRoot = Join-Path (Get-Location) '.agents\skills\mcp-to-dsh'
 npm.cmd ci --prefix $skillRoot
@@ -15,8 +19,11 @@ npm.cmd ci --prefix $skillRoot
 
 DSH home 解析分两个角色，二者不可互换：
 
-1. **User DSH Home（只读来源）**：`-UserDshHome` / `DSH_USER_HOME` / `DSH_HOME`，
-   只用于「一键同步设置」与启动期读取 provider/model。任何代码路径都不得写入它。
+1. **User DSH Home（只读来源）**：依次使用 `-UserDshHome`、用户此前选择的目录、
+   `DSH_USER_HOME` / `DSH_HOME`、用户目录下的 `.dsh`；只检查固定位置，不扫描磁盘。
+   交互启动找不到配置时弹出文件夹浏览器，选择含 `settings.yaml` 的目录即可，位置保存在
+   当前用户的 Toolkit 本地状态中。启动时同步，派发前检查配置变化；默认模型读取用户主配置，
+   不使用列表第一项或开发者设置。同步失败不派发。任何代码路径都不得写入用户源目录。
 2. **Team Home（唯一可写运行时）**：`-TeamDshHome` / `REMOTE_TO_DSH_HOME`，
    否则默认 `%LOCALAPPDATA%\CodexDshTeam\runtimes\<toolkit-install-id>\`
    （`install id` 来自 `%LOCALAPPDATA%\CodexDshTeam\install.json`）。

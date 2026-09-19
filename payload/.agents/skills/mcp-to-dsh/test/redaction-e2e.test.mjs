@@ -146,7 +146,9 @@ async function startOwnedMonitor(context, bridgeOptions = {}) {
   const userHome = join(root, "user-home");
   await mkdir(teamHome, { recursive: true });
   await mkdir(userHome, { recursive: true });
-  await writeFile(join(userHome, "settings.yaml"), "agent-default-model:\n  provider: fake-provider\n  model: fake-model\n");
+  const settings = "llm-pi-ai:\n  providers:\n    fake-provider:\n      models:\n        - id: fake-model\nagent-default-model:\n  provider: fake-provider\n  model: fake-model\n";
+  await writeFile(join(userHome, "settings.yaml"), settings);
+  await writeFile(join(teamHome, "settings.yaml"), settings);
   writeTeamHomeMarker(teamHome, buildTeamHomeMarker({ toolkitId: TOOLKIT_ID, installId: INSTALL_ID }));
 
   const bridge = createFakeBridge(bridgeOptions);

@@ -189,6 +189,66 @@ function Assert-DshTeamHomeOutsideWorkspace {
 # Install identity (stable across project moves)
 # ---------------------------------------------------------------------------
 
+function Resolve-DshUserHome {
+    [CmdletBinding()]
+    param(
+        [string]$Requested,
+        [string]$InitialDirectory = (Get-Location).Path,
+        [switch]$AllowPrompt,
+        [switch]$SelectAgain
+    )
+    # A bounded lookup, never a directory search. Save only a path in current-user local state.
+    $preferencePath = Join-Path (Get-DshTeamBaseDir) 'user-settings-source.json'
+    $canPrompt = $AllowPrompt -and [Environment]::UserInteractive -and $env:OS -eq 'Windows_NT'
+    $mustChoose = [bool]$SelectAgain
+    $candidate = $Requested
+    $source = '-UserDshHome'
+    if (-not $SelectAgain -and -not $candidate -and (Test-Path -LiteralPath $preferencePath -PathType Leaf)) {
+        try {
+            $saved = [IO.File]::ReadAllText($preferencePath) | ConvertFrom-Json
+            if ($saved.schema -ne 'codex-dsh-user-settings-source/v1' -or -not $saved.userDshHome) { throw 'Invalid configuration location record' }
+            $candidate = [string]$saved.userDshHome
+            $source = '上次选择的目录'
+        } catch {
+            if (-not $canPrompt) { throw '无法读取保存的 DSH 配置位置，请交互启动并重新选择，或传入 -UserDshHome。' }
+            $mustChoose = $true
+        }
+    }
+    # A GUI choice takes precedence over automatic discovery, including stale environment values.
+    if (-not $candidate) { $candidate = $env:DSH_USER_HOME; $source = 'DSH_USER_HOME' }
+    if (-not $candidate) { $candidate = $env:DSH_HOME; $source = 'DSH_HOME' }
+    if (-not $candidate) { $candidate = Join-Path $HOME '.dsh'; $source = '用户默认目录' }
+    if ($mustChoose) {
+        if (-not $canPrompt) { throw '当前为非交互运行，请通过 -UserDshHome 指定配置目录。' }
+        $candidate = $null
+    }
+    $picked = $false
+    while ($true) {
+        if ($candidate) {
+            $expanded = [Environment]::ExpandEnvironmentVariables($candidate)
+            if ((Test-Path -LiteralPath $expanded -PathType Container) -and
+                (Test-Path -LiteralPath (Join-Path $expanded 'settings.yaml') -PathType Leaf)) {
+                $resolved = (Resolve-Path -LiteralPath $expanded).Path
+                if ($resolved -match '[\x00-\x1f]') { throw 'DSH 配置路径不能包含控制字符。' }
+                if ($picked) {
+                    Assert-DshReparseFreePath -Path $preferencePath -Label 'DSH 配置位置记录' | Out-Null
+                    $value = [ordered]@{ schema = 'codex-dsh-user-settings-source/v1'; userDshHome = $resolved }
+                    Write-DshAtomicText -Path $preferencePath -Text (ConvertTo-SafeJson -InputObject $value -Depth 3) | Out-Null
+                }
+                return $resolved
+            }
+            if (-not $canPrompt) { throw "$source 未指向包含 settings.yaml 的 DSH 配置目录。请修正该位置；不会改用其他配置。" }
+            if ($picked) {
+                [System.Windows.Forms.MessageBox]::Show('这个文件夹中没有 settings.yaml。请选择你平时使用的 DSH 配置目录。', '请重新选择 DSH 配置', 'OK', 'Information') | Out-Null
+            }
+        }
+        if (-not $canPrompt) { throw '未找到 DSH 配置。交互启动会提供文件夹选择窗口；自动化运行请指定 -UserDshHome。' }
+        $candidate = Show-DshUserHomePicker -InitialDirectory $InitialDirectory
+        if (-not $candidate) { throw '已取消选择 DSH 配置，未启动任务。' }
+        $picked = $true
+    }
+}
+
 function Get-DshTeamBaseDir {
     if ($env:CODEX_DSH_TEAM_BASE_DIR) { return $env:CODEX_DSH_TEAM_BASE_DIR }
     if ($env:LOCALAPPDATA) { return (Join-Path $env:LOCALAPPDATA 'CodexDshTeam') }
@@ -1225,5 +1285,86 @@ function Assert-DshPowerShellRuntime {
         Edition = $PSVersionTable.PSEdition
         Version = $version.ToString()
         JsonSerializer = 'safe'
+    }
+}
+
+# Native Windows folder browser; loaded only for interactive setup.
+function Show-DshUserHomePicker {
+    param([string]$InitialDirectory)
+    Add-Type -AssemblyName System.Windows.Forms
+    if (-not ('DshUserHomePicker' -as [type])) {
+        Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class DshUserHomePicker
+{
+    public static string Select(string initialDirectory)
+    {
+        IFileDialog dialog = null; IShellItem initial = null, result = null;
+        try {
+            dialog = (IFileDialog)new FileOpenDialog();
+            uint options; dialog.GetOptions(out options);
+            dialog.SetOptions(options | 0x20U | 0x40U | 0x800U | 0x8U | 0x2000000U);
+            dialog.SetTitle("选择 DSH 配置文件夹（其中应有 settings.yaml）");
+            dialog.SetOkButtonLabel("选择此文件夹");
+            Guid iid = typeof(IShellItem).GUID;
+            Marshal.ThrowExceptionForHR(SHCreateItemFromParsingName(initialDirectory, IntPtr.Zero, ref iid, out initial));
+            dialog.SetDefaultFolder(initial); dialog.SetFolder(initial);
+            int hr = dialog.Show(IntPtr.Zero);
+            if (hr == unchecked((int)0x800704C7)) return null;
+            Marshal.ThrowExceptionForHR(hr);
+            dialog.GetResult(out result);
+            IntPtr path; result.GetDisplayName(0x80058000U, out path);
+            try { return Marshal.PtrToStringUni(path); } finally { Marshal.FreeCoTaskMem(path); }
+        } finally {
+            if (result != null) Marshal.ReleaseComObject(result);
+            if (initial != null) Marshal.ReleaseComObject(initial);
+            if (dialog != null) Marshal.ReleaseComObject(dialog);
+        }
+    }
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = true)]
+    private static extern int SHCreateItemFromParsingName(string path, IntPtr bindContext, ref Guid iid, out IShellItem item);
+    [ComImport, Guid("DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7")]
+    private class FileOpenDialog { }
+    [ComImport, Guid("42F85136-DB7E-439C-85F1-E4075D135FC8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IFileDialog
+    {
+        [PreserveSig] int Show(IntPtr parent);
+        void SetFileTypes(uint count, IntPtr specs); void SetFileTypeIndex(uint index); void GetFileTypeIndex(out uint index);
+        void Advise(IntPtr events, out uint cookie); void Unadvise(uint cookie);
+        void SetOptions(uint options); void GetOptions(out uint options);
+        void SetDefaultFolder(IShellItem item); void SetFolder(IShellItem item); void GetFolder(out IShellItem item);
+        void GetCurrentSelection(out IShellItem item);
+        void SetFileName([MarshalAs(UnmanagedType.LPWStr)] string name); void GetFileName(out IntPtr name);
+        void SetTitle([MarshalAs(UnmanagedType.LPWStr)] string title);
+        void SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string text);
+        void SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string text);
+        void GetResult(out IShellItem item); void AddPlace(IShellItem item, uint location);
+        void SetDefaultExtension([MarshalAs(UnmanagedType.LPWStr)] string extension);
+        void Close(int result); void SetClientGuid(ref Guid guid); void ClearClientData(); void SetFilter(IntPtr filter);
+    }
+    [ComImport, Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IShellItem
+    {
+        void BindToHandler(IntPtr bindContext, ref Guid handler, ref Guid iid, out IntPtr result);
+        void GetParent(out IShellItem parent);
+        void GetDisplayName(uint type, out IntPtr name);
+        void GetAttributes(uint mask, out uint attributes);
+        void Compare(IShellItem other, uint hint, out int order);
+    }
+}
+"@
+    }
+    if (-not (Test-Path -LiteralPath $InitialDirectory -PathType Container)) { $InitialDirectory = [Environment]::GetFolderPath('UserProfile') }
+    try { return [DshUserHomePicker]::Select($InitialDirectory) }
+    catch {
+        $fallback = New-Object System.Windows.Forms.FolderBrowserDialog
+        try {
+            $fallback.Description = '请选择包含 settings.yaml 的 DSH 配置文件夹'
+            $fallback.SelectedPath = $InitialDirectory
+            $fallback.ShowNewFolderButton = $false
+            if ($fallback.ShowDialog() -eq 'OK') { return $fallback.SelectedPath }
+            return $null
+        } finally { $fallback.Dispose() }
     }
 }

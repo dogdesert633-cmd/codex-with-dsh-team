@@ -78,8 +78,24 @@ $skillRoot = Join-Path $workspace '.agents\skills\mcp-to-dsh'
 
 ### 配置与故障排查（v1.0）
 
-- 可写 Team profile **没有静默默认值**：`-TeamProfile` > `CODEX_DSH_TEAM_PROFILE` >
-  owned Team Home 内唯一带 `package.json` 的 profile；0 个或多个候选一律 fail-visible。
+- 可写 Team profile 的确定顺序：`-TeamProfile` > `CODEX_DSH_TEAM_PROFILE` > owned Team Home 内已有的
+  **唯一**可选 profile；都为空（一个可选 profile 也没有）时使用默认 `acp` 并自动准备。只有**多个**既有
+  可选 profile 才算歧义、必须显式指定。"可选 profile" = `profiles/<name>/` 下有 `package.json` 的目录，
+  内置非 ACP 辅助模板（`web` / `headless` / `sdk` / `sdk-minimal`）与保留名 `node_modules` 都不计入。
+- **首启自动准备（v1.1.0）**：安装器仍然只是离线复制文件、**不预置任何 profile**。用户先在已安装的
+  `mcp-to-dsh` 目录执行一次 `npm ci`，随后启动器在 owned Team Home 内、用**已安装并锁定的 DSH 自带
+  模板**准备 ACP profile；自定义名字用该 DSH 的 `--from-default-profile acp` 初始化。无需手写
+  `package.json`，profile 目录也不需要另装一套依赖。profile 目录、其 `package.json` 与其中的用户插件
+  不会被替换、搬移或删除（同步只写**当前选定** profile 的 `cordis.patch.yml`，并保留带时间戳的
+  `.bak`）；半成品目录（缺 `package.json`，或 `dsh.profile.bundles` 为空）一律拒绝接管。
+- profile 是 **DSH 启动配置 / 模块声明**（`profiles/<name>/package.json` 声明加载哪些 ACP bundle），
+  不是个人资料、账户、provider 或 model 选择。非 ACP 内置辅助模板 `web` / `headless` / `sdk` /
+  `sdk-minimal` 在查找可选 profile 时被忽略，也不能作为 Team ACP 入口；保留名 `node_modules` 同样被拒绝。
+- **一个名字走完全链路（v1.1.0）**：启动器 `-TeamProfile` → Monitor `--dsh-profile` → health 的
+  `dshProfile` 与本地 record 的 `dsh_profile` → bridge 子进程环境 `CODEX_DSH_ACP_PROFILE` →
+  一键同步子进程 `-TeamProfile`。Monitor 复用要求 workspace、Team Home、profile **三者一致**；旧
+  record / 旧 health 缺该字段时按历史 `acp` 解释，因此只有请求 `acp` 时才允许复用，profile 不同会明确
+  报错而不是复用。
 - `dsh --profile acp` 的 `acp` 是 DSH 内置 ACP bundle id（协议内置，集中在
   `DshTeamCommon.ps1` 的 `$script:DshAcpBundleId` 命名），与内置 provider id
   `deepseek-official` 同类，不是个人选择。
@@ -99,7 +115,10 @@ secret 类环境变量**名字**与数量）与 `security.redaction` 开关。
 
 ## 4. Child-agent lifecycle
 
-权威语义见 `$codex-dsh-team/references/agent-lifecycle.md`。
+生命周期权威是**调用本传输的 Codex**，不是任何特定 Skill：由它决定 spawn / follow_up / wait /
+terminate / replace，本层只按合同忠实映射。映射细节见
+[agent-adapter-contract.md](agent-adapter-contract.md)。若调用方另行使用了 DSH 边界 Skill，其
+规则由调用方按任务自行读取，**不是本传输的必读前置**。
 
 目标 adapter 必须支持：
 

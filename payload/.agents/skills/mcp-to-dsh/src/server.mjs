@@ -526,11 +526,49 @@ async function readCompletedRuns(runRoot, limit) {
   return results;
 }
 
+// ---------------------------------------------------------------------------
+// DSH ACP profile name (single source of truth for the monitor side)
+// ---------------------------------------------------------------------------
+//
+// `acp` is a DSH protocol built-in (the ACP stdio server profile shipped by the DSH
+// distribution), the same category as the built-in `deepseek-official` provider id. The
+// profile is not a provider/model choice, but it *is* a launch parameter: the monitor, the
+// bridge child and the one-click configuration sync must all see the same value, otherwise a
+// Task could be reserved under one profile while the DSH child runs another.
+export const DEFAULT_DSH_PROFILE = "acp";
+/** Conservative name grammar: a leading alphanumeric, then up to 64 total name characters. */
+export const DSH_PROFILE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+/** Names that must never be accepted: they are file-system reserved locations, not profiles. */
+export const FORBIDDEN_DSH_PROFILE_NAMES = Object.freeze(["node_modules"]);
+
+/**
+ * Normalize and validate a DSH ACP profile name.
+ *
+ * An empty/absent value means the documented default (`acp`), which keeps every existing
+ * caller working. Anything else must match the grammar above and must not be a reserved
+ * location; the error is fail-visible and names the offending value (it is a launch
+ * parameter, never a credential).
+ */
+export function normalizeDshProfile(value, label = "dsh profile") {
+  const raw = typeof value === "string" ? value.trim() : value == null ? "" : String(value).trim();
+  if (raw === "") return DEFAULT_DSH_PROFILE;
+  if (!DSH_PROFILE_PATTERN.test(raw)) {
+    throw new Error(`${label} 非法：${raw}（只允许字母数字开头，后跟字母数字、点、下划线或连字符，最长 64 个字符）。`);
+  }
+  if (FORBIDDEN_DSH_PROFILE_NAMES.includes(raw.toLowerCase())) {
+    throw new Error(`${label} 非法：${raw} 是保留的目录名，不能作为 DSH ACP profile。`);
+  }
+  return raw;
+}
+
 export function createMonitorServer(options = {}) {
   const host = options.host ?? "127.0.0.1";
   const port = Number(options.port ?? 4317);
   const accessToken = options.token ?? randomBytes(32).toString("hex");
   const defaultWorkspace = resolve(options.workspace ?? process.cwd());
+  // The DSH ACP profile this monitor, its bridge children and its configuration sync all use.
+  // Validated here so a library caller cannot inject an unvalidated launch parameter.
+  const dshProfile = normalizeDshProfile(options.dshProfile, "Monitor --dsh-profile");
   // Configuration is taken from the explicit options only.
   //
   // The documented environment fallbacks (`REMOTE_TO_DSH_HOME` / `DSH_HOME` / `DSH_USER_HOME` /
@@ -1274,6 +1312,9 @@ export function createMonitorServer(options = {}) {
       // The Team Home must be outside the project workspace; pass the workspace so the
       // sync script can enforce that boundary instead of trusting the caller.
       "-Workspace", defaultWorkspace,
+      // The configuration this sync writes must belong to the same profile the bridge runs,
+      // otherwise a Task could be planned against profile A while the DSH child uses B.
+      "-TeamProfile", dshProfile,
     ];
     // Only non-sensitive host variables are forwarded; a credential that happens to live in the
     // monitor environment never reaches this child process.
@@ -2624,6 +2665,10 @@ export function createMonitorServer(options = {}) {
       source: process.env,
       explicit: { DSH_HOME: dshHome, DSH_PERMISSION_MODE: permissionMode },
     });
+    // Profile routing: the bridge child must run the same ACP profile this monitor was started
+    // with, otherwise a Task could be reserved under profile A while DSH runs profile B. The
+    // value is a validated, non-secret launch parameter (never a credential).
+    spawnEnv.CODEX_DSH_ACP_PROFILE = dshProfile;
     lastChildEnvAudit = auditChildEnv(process.env, spawnEnv);
     const permissionVerification = buildPermissionVerification({
       requested: requestedPermissionMode,
@@ -3122,6 +3167,9 @@ export function createMonitorServer(options = {}) {
           port,
           workspace: defaultWorkspace,
           dshHome,
+          // The ACP profile this monitor (and therefore every child it spawns) runs under, so a
+          // launcher can decide whether an already-running monitor may be reused.
+          dshProfile,
           // Non-secret security evidence: which policy version is active, whether the Team
           // Home is proven Toolkit-owned, and how the child environment is narrowed. Values
           // and secret names are never part of this projection beyond denied-name counts.
@@ -3493,6 +3541,7 @@ function parseArgs(argv) {
     dshHome: process.env.REMOTE_TO_DSH_HOME ?? process.env.DSH_HOME,
     dshUserHome: process.env.DSH_USER_HOME,
     toolkitInstallId: process.env.CODEX_DSH_TEAM_INSTALL_ID,
+    dshProfile: process.env.CODEX_DSH_ACP_PROFILE,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -3503,6 +3552,9 @@ function parseArgs(argv) {
     else if (arg === "--dsh-home") options.dshHome = resolve(argv[++index]);
     else if (arg === "--dsh-user-home") options.dshUserHome = resolve(argv[++index]);
     else if (arg === "--toolkit-install-id") options.toolkitInstallId = argv[++index];
+    // Validated at parse time as well as in the factory: `--dsh-profile` is a launch parameter
+    // and a bad value must fail the CLI loudly instead of silently falling back to `acp`.
+    else if (arg === "--dsh-profile") options.dshProfile = normalizeDshProfile(argv[++index], "Monitor --dsh-profile");
     else throw new Error(`未知参数: ${arg}`);
   }
   return options;

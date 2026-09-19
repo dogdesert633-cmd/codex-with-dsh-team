@@ -279,3 +279,25 @@ test('writeFileAtomic 不留下临时文件', async (context) => {
   writeFileAtomic(target, '{}\n');
   assert.deepEqual(await fsp.readdir(base), ['marker.json']);
 });
+
+test('marker 字段必须是非空字符串：空白字段/标量/数组都不是合法 marker', () => {
+  // 与 PowerShell 侧 Test-DshTeamHomeMarker 同一策略：缺字段、空白字段、标量或数组 JSON 都
+  // 只返回 ok=false + 可读 reason，绝不把“空白当成功”，也不依赖严格模式抛异常。
+  const blank = { ...buildTeamHomeMarker({ installId: 'install-1' }), installId: '   ' };
+  assert.equal(validateTeamHomeMarker(blank, { installId: 'install-1' }).ok, false);
+
+  const wrongType = { ...buildTeamHomeMarker({ installId: 'install-1' }), purpose: 7 };
+  assert.equal(validateTeamHomeMarker(wrongType, { installId: 'install-1' }).ok, false);
+
+  for (const scalar of [42, 'marker', true, [], [{ installId: 'install-1' }]]) {
+    const verdict = validateTeamHomeMarker(scalar, { installId: 'install-1' });
+    assert.equal(verdict.ok, false, `${JSON.stringify(scalar)} 不得被当作 marker`);
+    assert.equal(typeof verdict.reason, 'string');
+    assert.ok(verdict.reason.length > 0);
+  }
+
+  // 空 installId 的契约要求：没有 install id 时只校验其余字段，仍然拒绝空白字段。
+  const good = buildTeamHomeMarker({ installId: 'install-1' });
+  assert.equal(validateTeamHomeMarker(good).ok, true);
+  assert.equal(validateTeamHomeMarker({ ...good, createdAt: '' }, { installId: 'install-1' }).ok, false);
+});

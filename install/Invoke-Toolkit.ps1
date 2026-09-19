@@ -5,8 +5,9 @@
   Design rules (fail-closed, zero guessing):
     * Only files explicitly listed in the release manifest are managed.
     * Unknown same-name files block the whole operation; nothing is overwritten.
-    * Upgrades may replace a file only when its current SHA-256 equals the value recorded
-      in the previous ownership manifest; user-modified managed files block everything.
+    * Upgrades may replace a file only while its current bytes are identical to the pristine
+      baseline recorded for it; user-modified managed files block everything. No checksum,
+      hash or digest is computed, stored or trusted.
     * Missing / corrupt / wrong-identity ownership manifests, unsafe paths, reparse points,
       junctions, symlinks, '..', absolute / UNC / device paths, root paths and out-of-bounds
       targets block the operation with zero writes.
@@ -17,8 +18,10 @@
       commits; user-modified files are kept, unknown / user-added files are never deleted.
     * Never elevates, never uses the network, never touches PATH / registry / global
       PowerShell / Git configuration / an existing AGENTS.md / sources.
-    * Plan / journal / backup / log never contain file contents or secret values; paths are
-      redacted in every human-readable or persisted message.
+    * Plan / journal / log record paths and status, never file bodies, and every human-readable
+      or persisted message is redacted. Transaction backup/quarantine and the pristine baselines
+      are deliberate byte copies of managed files, kept for rollback, restore and ownership
+      comparison respectively - they are not message channels.
 
   Usage:
     pwsh -File install/Invoke-Toolkit.ps1 -Action Install -Target <project> [-PlanOnly]

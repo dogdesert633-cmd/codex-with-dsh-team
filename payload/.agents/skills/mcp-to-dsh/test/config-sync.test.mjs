@@ -19,6 +19,23 @@ const ALL_PS = [syncScript, teamScript, monitorScript, dispatchScript, commonScr
 const TEST_INSTALL_ID = 'test-install-0001';
 const MARKER_NAME = '.codex-dsh-team-home.json';
 
+// 一个“已由 DSH 官方模板初始化”的 Team profile manifest：bundles 必须非空且声明 ACP 运行入口，
+// 否则新的 prepare/ensure 逻辑会（正确地）拒绝把空壳当作可用 profile。
+const TEAM_ACP_MANIFEST = `${JSON.stringify({
+  name: 'dsh-profile-acp',
+  private: true,
+  dependencies: {},
+  dsh: {
+    profile: {
+      bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-acp-app'],
+      patchReload: 'startup',
+    },
+  },
+}, null, 2)}\n`;
+
+// 用户 Home 里私有 profile 的内容：它绝不能被镜像进 Team Home。
+const USER_PRIVATE_PLUGIN = '// user-private-plugin\n';
+
 // 同步脚本的 CLI 模式是一键同步唯一允许被执行的东西；这里用真实的 PowerShell 主机跑它，
 // 只针对临时目录里的假 Home，绝不接触用户的真实 DSH home，也绝不启动 provider。
 // Windows 上使用 Windows PowerShell 5.1，正是要确认 5.1 也满足同一个 JSON 输出契约。
@@ -27,10 +44,10 @@ const shell = process.platform === 'win32' ? 'powershell.exe' : 'pwsh';
 // 同步 CLI 必须有界：超时按 PID tree 终止，并以清晰断言失败，而不是让整个套件挂住。
 const SYNC_CLI_TIMEOUT_MS = 120000;
 
-async function runSyncCli(args) {
+async function runSyncCli(args, scriptPath = syncScript) {
   const result = await spawnWithTimeout(
     shell,
-    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', syncScript, ...args],
+    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, ...args],
     { timeoutMs: SYNC_CLI_TIMEOUT_MS },
   );
   assert.equal(
@@ -39,6 +56,42 @@ async function runSyncCli(args) {
     `Sync-DshTeamConfig.ps1 超过 ${SYNC_CLI_TIMEOUT_MS}ms 未退出（已终止 PID tree）。stderr tail:\n${result.stderr.slice(-1500)}`,
   );
   return result;
+}
+
+// A throw-away "installed skill root": the current script under test plus a stub DSH that only
+// implements `--dump-default-config`. This exercises the real bundled-runtime derivation path in
+// the CLI without npm, the network or a provider, and never touches the user's real DSH Home.
+const STUB_DSH_JS = [
+  "const fs = require('node:fs');",
+  "const path = require('node:path');",
+  "const args = process.argv.slice(2);",
+  "const index = args.indexOf('--profile');",
+  "const name = index >= 0 ? args[index + 1] : null;",
+  "const home = process.env.DSH_HOME;",
+  "if (!name || !home) { console.error('stub-dsh: --profile and DSH_HOME are required'); process.exit(2); }",
+  "const dir = path.join(home, 'profiles', name);",
+  "fs.mkdirSync(dir, { recursive: true });",
+  "fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({",
+  "  name: 'dsh-profile-' + name, private: true, dependencies: {},",
+  "  dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-acp-app'], patchReload: 'startup' } },",
+  "}, null, 2) + '\\n');",
+  "fs.writeFileSync(path.join(dir, 'cordis.patch.yml'), '# stub\\n[]\\n');",
+  "process.exit(0);",
+  '',
+].join('\n');
+
+async function makeStubSkillRoot(base) {
+  const skillRoot = path.join(base, 'installed-skill');
+  const installedScripts = path.join(skillRoot, 'scripts');
+  await fs.mkdir(installedScripts, { recursive: true });
+  for (const name of ['DshTeamCommon.ps1', 'Sync-DshTeamConfig.ps1']) {
+    await fs.copyFile(path.join(scriptsDir, name), path.join(installedScripts, name));
+  }
+  const dshLib = path.join(skillRoot, 'node_modules', '@deepseek-ai', 'dsh', 'lib');
+  await fs.mkdir(dshLib, { recursive: true });
+  // 这里不复制 package.json，因此 .js 按 CommonJS 解析，stub 里的 require 可用。
+  await fs.writeFile(path.join(dshLib, 'bin.js'), STUB_DSH_JS);
+  return { skillRoot, syncScript: path.join(installedScripts, 'Sync-DshTeamConfig.ps1') };
 }
 
 // 与被测实现相互独立的 fixture：直接写 marker，而不是调用实现的 writer。
@@ -71,14 +124,19 @@ async function snapshot(dir) {
   return entries;
 }
 
-async function createHomes({ marker = true } = {}) {
-  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-config-sync-'));
+async function createHomes({ marker = true, teamProfile = true, baseDir } = {}) {
+  const base = baseDir ?? await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-config-sync-'));
   const user = path.join(base, 'user');
   const team = path.join(base, 'team');
   await fs.mkdir(path.join(user, 'profiles', 'acp'), { recursive: true });
-  await fs.mkdir(path.join(team, 'profiles', 'acp'), { recursive: true });
-  await fs.writeFile(path.join(user, 'profiles', 'acp', 'package.json'), '{"name":"acp"}\n');
-  await fs.writeFile(path.join(team, 'profiles', 'acp', 'package.json'), '{"name":"acp"}\n');
+  await fs.mkdir(path.join(user, 'profiles', 'user-private'), { recursive: true });
+  await fs.mkdir(team, { recursive: true });
+  await fs.writeFile(path.join(user, 'profiles', 'acp', 'package.json'), '{"name":"user-minimal"}\n');
+  await fs.writeFile(path.join(user, 'profiles', 'user-private', 'plugin.js'), USER_PRIVATE_PLUGIN);
+  if (teamProfile) {
+    await fs.mkdir(path.join(team, 'profiles', 'acp'), { recursive: true });
+    await fs.writeFile(path.join(team, 'profiles', 'acp', 'package.json'), TEAM_ACP_MANIFEST);
+  }
   await fs.writeFile(path.join(user, 'settings.yaml'), [
     'agent-default-model:',
     '  provider: aliyun',
@@ -120,7 +178,10 @@ test('项目自有脚本不再包含任何 hash 校验逻辑', async () => {
   // 幂等性改为直接内容比较（无 hash 校验流程）。
   assert.match(syncText, /-cne \$userSettingsText/);
   assert.match(syncText, /-cne \$userCredentialsText/);
-  assert.match(syncText, /-cne \(Get-Content -Raw -LiteralPath \$target\)/);
+  // 停止把用户所有 profiles 整体 -Force 覆盖进 Team Home：模型 pin 只作用于当前选定 profile。
+  assert.equal(/Copy-ProfileManifests/.test(syncText), false, '同步脚本不得再整体复制用户 profiles 目录');
+  assert.match(syncText, /Resolve-DshTeamProfileSelection/, '同步脚本必须走共享的 owned->prepare->resolve 选择逻辑');
+  assert.match(syncText, /cordis\.patch\.yml/);
 });
 
 test('一键同步 CLI 只返回安全摘要，并把运行配置复制进 owned Team Home', async (context) => {
@@ -169,6 +230,12 @@ test('一键同步 CLI 只返回安全摘要，并把运行配置复制进 owned
   for (const denied of ['.env', 'server.pem']) {
     await assert.rejects(fs.stat(path.join(team, 'profiles', 'acp', denied)), /ENOENT/, `${denied} 不得进入 Team Home`);
   }
+
+  // 用户 profiles 不再被整体镜像：Team 模板 manifest 保留，用户私有 profile 不出现。
+  const teamManifest = await fs.readFile(path.join(team, 'profiles', 'acp', 'package.json'), 'utf8');
+  assert.match(teamManifest, /dsh-acp-app/, 'Team profile manifest 必须保留官方模板内容');
+  assert.equal(teamManifest.includes('user-minimal'), false, '用户 manifest 不得覆盖 Team 模板 manifest');
+  await assert.rejects(fs.stat(path.join(team, 'profiles', 'user-private')), /ENOENT/, '用户私有 profile 不得被镜像');
 
   // 同步方向单向：用户 DSH Home 的文件集合/大小/mtime 全程不变。
   assert.deepEqual(await snapshot(user), before, '用户 DSH Home 必须保持只读');
@@ -331,4 +398,118 @@ test('启动器不再硬编码 DSH 版本目录回退', async () => {
     assert.equal(/home-acp-/i.test(text), false, `${path.basename(file)} 不得硬编码 DSH 版本目录`);
     assert.equal(/home-dsh-/i.test(text), false);
   }
+});
+
+test('启动器去掉“安装器必须预置 profile”的错误检查，并把最终 profile 透传给 Monitor', async () => {
+  const teamText = await fs.readFile(teamScript, 'utf8');
+  assert.match(teamText, /Resolve-DshTeamProfileSelection/);
+  assert.equal(/必须由安装器预置/.test(teamText), false, '启动器不得再要求安装器预置 profile');
+  assert.equal(/安装器预置 Team runtime/.test(teamText), false);
+  // 最终 profile 必须作为 -TeamProfile 进入 monitorArgs（single-quoted acp 字面量仍不得出现）。
+  assert.match(teamText, /TeamProfile\s*=\s*\$TeamProfile/);
+});
+
+test('新 Team Home 首次同步会用官方 DSH 模板 bootstrap ACP profile，且不复制用户 profile', { timeout: 180000 }, async (context) => {
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-config-sync-bootstrap-'));
+  context.after(() => fs.rm(base, { recursive: true, force: true }));
+  const installed = await makeStubSkillRoot(base);
+  // teamProfile: false -> Team Home 里没有任何 profile，正是“首启”状态。
+  const { user, team } = await createHomes({ baseDir: base, teamProfile: false });
+  const identity = ['-InstallId', TEST_INSTALL_ID];
+  const userBefore = await snapshot(user);
+
+  const first = await runSyncCli(['-UserDshHome', user, '-TeamDshHome', team, ...identity], installed.syncScript);
+  assert.equal(first.code, 0, `stdout=${first.stdout} stderr=${first.stderr}`);
+  const summary = JSON.parse(first.stdout.trim().split(/\r?\n/).at(-1));
+  assert.equal(summary.status, 'success');
+  assert.deepEqual(summary.changed, ['settings.yaml', '.credentials.yaml', 'profiles/acp/cordis.patch.yml']);
+  // 真空且未指定：显式选择 ACP 默认 profile，并在 notes 里说明，而不是静默。
+  assert.equal(summary.notes.some((note) => note.includes('默认 ACP profile')), true,
+    `必须显式说明默认 ACP profile：${summary.notes.join(' | ')}`);
+
+  // Team profile 由 DSH 模板 bootstrap，而不是复制用户的极简 manifest。
+  const teamManifestPath = path.join(team, 'profiles', 'acp', 'package.json');
+  const teamManifest = await fs.readFile(teamManifestPath, 'utf8');
+  assert.match(teamManifest, /dsh-acp-app/);
+  assert.equal(teamManifest.includes('user-minimal'), false);
+  assert.match(await fs.readFile(path.join(team, 'profiles', 'acp', 'cordis.patch.yml'), 'utf8'), /provider: aliyun/);
+
+  // 用户私有 profile 与插件绝不被镜像；用户 Home 全程只读。
+  await assert.rejects(fs.stat(path.join(team, 'profiles', 'user-private')), /ENOENT/);
+  assert.deepEqual(await snapshot(user), userBefore, '用户 DSH Home 必须保持只读');
+
+  // 第二次同步幂等：无变更、不重写 profile manifest 与 patch。
+  const manifestStat = await fs.stat(teamManifestPath);
+  const patchStat = await fs.stat(path.join(team, 'profiles', 'acp', 'cordis.patch.yml'));
+  const second = await runSyncCli(['-UserDshHome', user, '-TeamDshHome', team, ...identity], installed.syncScript);
+  assert.equal(second.code, 0, second.stderr);
+  const again = JSON.parse(second.stdout.trim().split(/\r?\n/).at(-1));
+  assert.deepEqual(again.changed, [], '内容一致时不得再报任何变更');
+  assert.equal((await fs.stat(teamManifestPath)).mtimeMs, manifestStat.mtimeMs, '已有 profile manifest 不得被重写');
+  assert.equal((await fs.stat(path.join(team, 'profiles', 'acp', 'cordis.patch.yml'))).mtimeMs, patchStat.mtimeMs);
+  assert.deepEqual(await snapshot(user), userBefore);
+});
+
+test('显式自定义 profile 名可以用官方 --from-default-profile acp 初始化并复用', { timeout: 180000 }, async (context) => {
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-config-sync-custom-'));
+  context.after(() => fs.rm(base, { recursive: true, force: true }));
+  const installed = await makeStubSkillRoot(base);
+  const { user, team } = await createHomes({ baseDir: base, teamProfile: false });
+  const identity = ['-InstallId', TEST_INSTALL_ID];
+  const customName = 'team-custom-137';
+
+  const first = await runSyncCli(['-UserDshHome', user, '-TeamDshHome', team, ...identity, '-TeamProfile', customName], installed.syncScript);
+  assert.equal(first.code, 0, `stdout=${first.stdout} stderr=${first.stderr}`);
+  const summary = JSON.parse(first.stdout.trim().split(/\r?\n/).at(-1));
+  assert.deepEqual(summary.changed, ['settings.yaml', '.credentials.yaml', `profiles/${customName}/cordis.patch.yml`]);
+  const customManifest = await fs.readFile(path.join(team, 'profiles', customName, 'package.json'), 'utf8');
+  assert.match(customManifest, /dsh-acp-app/, '自定义名字必须由 ACP 模板初始化');
+
+  // 显式自定义名不会顺带创建 acp。
+  assert.deepEqual(await fs.readdir(path.join(team, 'profiles')), [customName]);
+
+  const second = await runSyncCli(['-UserDshHome', user, '-TeamDshHome', team, ...identity, '-TeamProfile', customName], installed.syncScript);
+  assert.equal(second.code, 0, second.stderr);
+  const again = JSON.parse(second.stdout.trim().split(/\r?\n/).at(-1));
+  assert.deepEqual(again.changed, [], '已有自定义 profile 再次同步必须幂等');
+  assert.equal(await fs.readFile(path.join(team, 'profiles', customName, 'package.json'), 'utf8'), customManifest);
+});
+
+test('Sync 拒绝非 ACP 内置模板、未知半成品目录、空壳 manifest 与多候选', { timeout: 180000 }, async (context) => {
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-config-sync-refuse-'));
+  context.after(() => fs.rm(base, { recursive: true, force: true }));
+  const installed = await makeStubSkillRoot(base);
+  const { user, team } = await createHomes({ baseDir: base, teamProfile: false });
+  const identity = ['-InstallId', TEST_INSTALL_ID];
+
+  // 1) web/headless/sdk 不是 ACP 入口：即使显式指定也拒绝。
+  const web = await runSyncCli(['-UserDshHome', user, '-TeamDshHome', team, ...identity, '-TeamProfile', 'web'], installed.syncScript);
+  assert.equal(web.code, 1);
+  assert.match(web.stderr, /ACP/);
+  assert.equal(await fs.stat(path.join(team, 'profiles', 'web')).then(() => true, () => false), false,
+    '被拒绝的模板不得被创建');
+
+  // 2) 无 manifest 的未知半成品目录：拒绝接管。
+  await fs.mkdir(path.join(team, 'profiles', 'half'), { recursive: true });
+  const half = await runSyncCli(['-UserDshHome', user, '-TeamDshHome', team, ...identity, '-TeamProfile', 'half'], installed.syncScript);
+  assert.equal(half.code, 1);
+  assert.match(half.stderr, /没有 package\.json|拒绝接管/);
+
+  // 3) 有 manifest 但没有有效 bundles 的空壳：拒绝当成功。
+  await fs.mkdir(path.join(team, 'profiles', 'empty-shell'), { recursive: true });
+  await fs.writeFile(path.join(team, 'profiles', 'empty-shell', 'package.json'), '{"name":"empty-shell"}\n');
+  const shell = await runSyncCli(['-UserDshHome', user, '-TeamDshHome', team, ...identity, '-TeamProfile', 'empty-shell'], installed.syncScript);
+  assert.equal(shell.code, 1);
+  assert.match(shell.stderr, /bundles/);
+  assert.equal(await fs.readFile(path.join(team, 'profiles', 'empty-shell', 'package.json'), 'utf8'), '{"name":"empty-shell"}\n',
+    '被拒绝的空壳 manifest 不得被改写');
+
+  // 4) 多个候选 profile：不猜，直接拒绝。
+  await fs.mkdir(path.join(team, 'profiles', 'second'), { recursive: true });
+  await fs.writeFile(path.join(team, 'profiles', 'second', 'package.json'), TEAM_ACP_MANIFEST);
+  await fs.mkdir(path.join(team, 'profiles', 'acp'), { recursive: true });
+  await fs.writeFile(path.join(team, 'profiles', 'acp', 'package.json'), TEAM_ACP_MANIFEST);
+  const many = await runSyncCli(['-UserDshHome', user, '-TeamDshHome', team, ...identity], installed.syncScript);
+  assert.equal(many.code, 1);
+  assert.match(many.stderr, /多个候选/);
 });

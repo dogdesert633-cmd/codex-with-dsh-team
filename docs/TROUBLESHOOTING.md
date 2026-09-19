@@ -115,6 +115,26 @@ adopts, patches or reconfigures a real DSH Home. Use the default owned location
 (`%LOCALAPPDATA%\CodexDshTeam\runtimes\<toolkit-install-id>\`) or point `-TeamDshHome` at a
 directory that already carries a valid `.codex-dsh-team-home.json` marker.
 
+## First start and ACP profile problems
+
+The ACP profile is prepared **at runtime** inside the owned Team Home; the installer never
+pre-places one. The first step is always one `npm ci` inside the installed
+`<project>\.agents\skills\mcp-to-dsh` directory — without the payload dependencies the launcher
+cannot reach DSH at all. A Team Home with **no** profile at all is not an error: the launcher uses
+the default `acp` and prepares it. Then:
+
+| Message | Cause | What to do |
+| --- | --- | --- |
+| `找不到任何带 package.json 的 ACP profile` | This comes from the lower-level resolver, which is also callable on its own; the normal launcher path does not stop here because it prepares the default `acp` first. | Run the launcher (it prepares `acp`), or pass `-TeamProfile <name>` to create/select that name. |
+| `无法安全推断` / several candidates reported | More than one optional profile exists, so the toolkit refuses to guess. | Choose explicitly: `-TeamProfile <name>` or `CODEX_DSH_TEAM_PROFILE=<name>`. |
+| `不能作为 Codex x DSH Team 的 ACP 入口` | The name is a DSH built-in helper template (`web`, `headless`, `sdk`, `sdk-minimal`), which is not an ACP entry. | Use `acp`, or a custom name (a custom name is initialised from the official ACP template). `headless`/`web` are not ACP entries. |
+| `没有 package.json；拒绝接管未知或半成品目录` | The target profile directory already exists but is not a valid profile. | Nothing is overwritten: move or clean that directory, or pick another `-TeamProfile` name. |
+| `缺少有效的非空 dsh.profile.bundles` | The profile's `package.json` is an empty shell, so it is not a usable ACP profile. | Repair that profile, or use another `-TeamProfile` name. |
+| Monitor refused to reuse a running instance | The running Monitor has a different workspace, Team Home or **profile**. | Use the profile it runs (`--dsh-profile <that name>`), start with `-AutoPort`, or stop the other Monitor. |
+
+`profile` here is a DSH launch configuration / module declaration, not your personal profile.
+Existing profiles are left untouched, and your user DSH Home is never used as a profile location.
+
 ## Uninstall kept some files
 
 The plan lists them. Anything reported as `keep` was either modified by you, added by you or

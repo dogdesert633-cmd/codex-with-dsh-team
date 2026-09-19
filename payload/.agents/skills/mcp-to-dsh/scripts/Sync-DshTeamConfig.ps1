@@ -12,14 +12,18 @@
 # Synced (runtime configuration only):
 #   - settings.yaml              provider list + agent default provider/model
 #   - .credentials.yaml          API keys referenced by apiKeyEnv (atomic, owner-only ACL)
-#   - profiles/<profile>/        only the profile manifests and patch layers that
-#                                exist in the source home, minus node_modules
-#   - profiles/acp/cordis.patch.yml is generated to pin the ACP child-agent
-#                                runtime to the configured provider/model
+#   - profiles/<profile>/cordis.patch.yml  pins the *selected* ACP profile to the configured
+#                                provider/model
+#
+# The selected Team profile itself is only ever prepared, never copied from the user home:
+# it is bootstrapped from the official DSH ACP template when it is missing, and an existing
+# manifest/patch is validated and left untouched. User profile manifests and plugins are not
+# mirrored, so a private plugin can never leak into the Team runtime and a newer Team template
+# can never be overwritten by an older user copy.
 #
 # Never copied (personal, credential-bearing or regenerable state):
 #   sessions/, storages/, attachments/, *.log, artifacts, caches, backups,
-#   .env*, *.pem, *.key, *.pfx, id_rsa*, .netrc, .npmrc.
+#   user profiles/<name>/ payloads, .env*, *.pem, *.key, *.pfx, id_rsa*, .netrc, .npmrc.
 #
 # No credential value is ever printed, and the credentials file is never re-emitted: the
 # summary reports only the changed relative path.
@@ -207,43 +211,15 @@ function Test-AcpPatchMatches {
         $providerMatch.Groups[1].Value -eq $Provider -and $modelMatch.Groups[1].Value -eq $Model)
 }
 
-# Only the small manifest/patch layer of each source profile is mirrored.
-# node_modules, locks and runtime state are skipped: the Team runtime resolves
-# its own installed plugin bundles.
-function Copy-ProfileManifests {
-    param(
-        [Parameter(Mandatory)][string]$SourceProfiles,
-        [Parameter(Mandatory)][string]$TargetProfiles
-    )
-
-    $copied = New-Object System.Collections.Generic.List[string]
-    foreach ($profileDir in (Get-ChildItem -LiteralPath $SourceProfiles -Directory -ErrorAction SilentlyContinue)) {
-        if ($profileDir.Name -eq 'node_modules') { continue }
-        $manifest = Join-Path $profileDir.FullName 'package.json'
-        if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) { continue }
-        $targetDir = Join-Path $TargetProfiles $profileDir.Name
-        New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
-        foreach ($fileName in @('package.json', 'pnpm-workspace.yaml')) {
-            # 凭据库与私钥材料永远不进入 Team Home，即使它们出现在 profile 目录里。
-            if (Test-DshDeniedFileName -Name $fileName) { continue }
-            $source = Join-Path $profileDir.FullName $fileName
-            if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { continue }
-            if (Test-DshDeniedFileName -Name $source) { continue }
-            $target = Join-Path $targetDir $fileName
-            # Idempotent whole-file content comparison, deliberately without any digest step:
-            # the manifest text is compared directly, so every real content change is copied
-            # and an unchanged file is never re-copied. This project owns no checksum check.
-            $needsCopy = $true
-            if (Test-Path -LiteralPath $target -PathType Leaf) {
-                $needsCopy = (Get-Content -Raw -LiteralPath $source) -cne (Get-Content -Raw -LiteralPath $target)
-            }
-            if ($needsCopy) {
-                Copy-Item -LiteralPath $source -Destination $target -Force
-                $copied.Add("profiles/$($profileDir.Name)/$fileName")
-            }
-        }
+# 解析随包安装、已锁定的 DSH 运行时。CLI 模式（Monitor 一键同步）不会显式传 -DshBinPath，
+# 因此在这里从 skill root 推导；被 start_dsh_team.ps1 dot-source 时，调用方会显式传参。
+function Get-DshSyncBootstrapRuntime {
+    $skillRoot = Split-Path -Parent $PSScriptRoot
+    $nodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
+    return [pscustomobject]@{
+        DshBinPath = (Get-DshBundledDshBinPath -SkillRoot $skillRoot)
+        NodePath   = $(if ($nodeCommand) { $nodeCommand.Source } else { $null })
     }
-    return $copied
 }
 
 function Invoke-DshTeamConfigSync {
@@ -253,18 +229,24 @@ function Invoke-DshTeamConfigSync {
     .DESCRIPTION
         Returns a report object describing what was synced and which provider/model the
         Team runtime is pinned to. Throws on any condition that would make the Team runtime
-        unusable, and never prints credential values.
+        unusable, and never prints credential values. The selected Team profile is only
+        prepared/resolved - user profile payloads are never copied into the Team Home.
     #>
     param(
         [Parameter(Mandatory)][string]$UserDshHome,
         [Parameter(Mandatory)][string]$TeamDshHome,
-        # Team profile 目录名；为空时在 owned Team Home 内发现（0/多候选 fail-visible）。
+        # Team profile 目录名；为空时按 owned Team Home 内唯一 ACP 候选发现；真空且未指定时
+        # 选择 ACP 默认 profile 并在 notes 里显式说明；0/多候选不再静默。
         [string]$TeamProfile,
         # 稳定 install id 与 manifest 路径；为空时从 manifest 读取或首次创建。
         [string]$InstallId,
         [string]$InstallManifestPath,
         [string]$TeamHomeRoot,
-        [string]$Workspace
+        [string]$Workspace,
+        # 已锁定的 DSH 运行时（profile bootstrap 用）。为空时从本脚本所在 skill root 推导。
+        [string]$DshBinPath,
+        [string]$NodePath,
+        [int]$ProfileTimeoutSeconds = 120
     )
 
     if (-not $InstallId) {
@@ -279,12 +261,22 @@ function Invoke-DshTeamConfigSync {
     $teamHome = $resolvedTeam.TeamDshHome
     # 同步方向永远单向：用户 DSH Home 只读，Team Home 唯一可写。
     Assert-UserDshHomeReadOnlySource -UserDshHome $userHome -TeamDshHome $teamHome | Out-Null
-    # 可写 profile 必须被发现或显式配置，绝不静默默认成某个固定名字。
-    $TeamProfile = Resolve-DshTeamProfile -Requested $TeamProfile -TeamDshHome $teamHome `
-        -EnvironmentValue $env:CODEX_DSH_TEAM_PROFILE
 
     $notes = New-Object System.Collections.Generic.List[string]
     $changed = New-Object System.Collections.Generic.List[string]
+
+    # 0. Team profile：owned 验证 -> prepare/ensure -> resolve，两个入口共用同一逻辑。
+    #    先把 profile 准备好再复制凭据：新 Home 若无法成为可用的 ACP 运行时，就不会先拿到凭据。
+    if (-not $DshBinPath -or -not $NodePath) {
+        $runtime = Get-DshSyncBootstrapRuntime
+        if (-not $DshBinPath) { $DshBinPath = $runtime.DshBinPath }
+        if (-not $NodePath) { $NodePath = $runtime.NodePath }
+    }
+    $profileSelection = Resolve-DshTeamProfileSelection -Requested $TeamProfile -TeamDshHome $teamHome `
+        -InstallId $InstallId -EnvironmentValue $env:CODEX_DSH_TEAM_PROFILE `
+        -DshBinPath $DshBinPath -NodePath $NodePath -Workspace $Workspace -TimeoutSeconds $ProfileTimeoutSeconds
+    $TeamProfile = $profileSelection.Name
+    foreach ($profileNote in @($profileSelection.Notes)) { $notes.Add($profileNote) }
 
     # 1. settings.yaml -------------------------------------------------------
     $userSettingsPath = Join-Path $userHome 'settings.yaml'
@@ -349,19 +341,17 @@ function Invoke-DshTeamConfigSync {
         $notes.Add('Team 凭证已与用户 DSH 凭证一致。')
     }
 
-    # 3. profile manifests ---------------------------------------------------
-    $userProfiles = Join-Path $userHome 'profiles'
-    $teamProfiles = Join-Path $teamHome 'profiles'
-    New-Item -ItemType Directory -Force -Path $teamProfiles | Out-Null
-    $profileFiles = @(Copy-ProfileManifests -SourceProfiles $userProfiles -TargetProfiles $teamProfiles)
-    foreach ($file in $profileFiles) { $changed.Add($file) }
-
-    # 4. ACP profile patch: pin the child-agent runtime to the working model --
-    $profileDir = Join-Path $teamProfiles $TeamProfile
+    # 3. Selected profile model pin ------------------------------------------
+    # 只写当前选定 profile 的 patch。用户 profiles 的 manifest/插件不再整体复制进 Team Home：
+    # 未知用户插件不会泄漏，Team 模板/旧自定义 manifest 也不会被用户副本覆盖。
+    $profileDir = $profileSelection.Dir
     if (-not (Test-Path -LiteralPath $profileDir -PathType Container)) {
         throw "the Team DSH home has no '$TeamProfile' profile at $profileDir; the DSH Team bridge cannot start without it."
     }
     $patchPath = Join-Path $profileDir 'cordis.patch.yml'
+    # 写入 patch 前再确认一次写入链：profile 目录与 patch 文件本身都不得是 reparse point。
+    Assert-DshReparseFreePath -Path $profileDir -Label 'profile 目录' | Out-Null
+    Assert-DshReparseFreePath -Path $patchPath -Label 'cordis.patch.yml' | Out-Null
     $patchText = Get-AcpPatchText -Provider $selection.DefaultProvider -Model $selection.DefaultModel
     $patchNeedsWrite = $true
     if (Test-Path -LiteralPath $patchPath -PathType Leaf) {
@@ -385,6 +375,7 @@ function Invoke-DshTeamConfigSync {
         UserDshHome      = $userHome
         TeamDshHome      = $teamHome
         TeamProfile      = $TeamProfile
+        TeamProfileSource = $profileSelection.Source
         Provider         = $selection.DefaultProvider
         Model            = $selection.DefaultModel
         ProviderModels   = $selection.ProviderModels

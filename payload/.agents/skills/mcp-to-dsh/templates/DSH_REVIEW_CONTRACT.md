@@ -8,7 +8,8 @@ This review must be executed by a **newly spawned independent Reviewer child age
 
 - Work Package contract
 - Candidate source/diff
-- DSH Tester deterministic validation evidence
+- Deterministic validation evidence (produced by whichever backend the caller assigned; formal
+  validation is not assumed to be a DSH task)
 
 ## Restrictions
 

@@ -1,0 +1,6 @@
+interface:
+  display_name: "Codex Team"
+  short_description: "通用多角色协作：按任务启用角色、独立审查与最终验收"
+  default_prompt: "使用 $codex-team 组织这项工作：按任务启用合适的角色，为每个成员写明目标、验收标准、读写边界与依赖，审查与验收独立于实现者，失败带证据返回修复，并在最后做一次明确的最终验收。"
+policy:
+  allow_implicit_invocation: true

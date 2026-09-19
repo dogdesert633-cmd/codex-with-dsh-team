@@ -2,8 +2,8 @@
 <#
   Verifies a built release package (directory or zip) without network access.
 
-    pwsh -File tools/Verify-Release.ps1 -Package dist/codex-dsh-team-toolkit-v1.0.0
-    pwsh -File tools/Verify-Release.ps1 -Package dist/codex-dsh-team-toolkit-v1.0.0.zip
+    pwsh -File tools/Verify-Release.ps1 -Package dist/codex-dsh-team-toolkit-v1.1.0
+    pwsh -File tools/Verify-Release.ps1 -Package dist/codex-dsh-team-toolkit-v1.1.0.zip
     pwsh -File tools/Verify-Release.ps1 -Package <dir> -ContentScan
 
   Checks:

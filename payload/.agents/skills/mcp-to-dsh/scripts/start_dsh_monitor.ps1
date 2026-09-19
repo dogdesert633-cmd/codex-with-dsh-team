@@ -12,6 +12,10 @@
     # 稳定 install id（随安装 manifest 保存）。为空时从 install manifest 读取或首次创建。
     [string]$InstallId,
     [string]$InstallManifestPath,
+    # DSH ACP profile 名。`acp` 是 DSH 内置协议 profile；未传时默认 `acp`（既有调用完全兼容）。
+    # 该值会同时传给 server（--dsh-profile）、bridge 子进程与一键配置同步（-TeamProfile），
+    # 保证 Task/permission 证据与 DSH 子进程运行在同一个 profile 下。
+    [string]$TeamProfile,
     [switch]$Background,
     [switch]$AutoPort,
     [ValidateRange(1, 200)]
@@ -27,6 +31,21 @@ $ErrorActionPreference = 'Stop'
 # 入口运行时校验：Windows PowerShell 5.1 与 PowerShell 7+ 都必须通过 JSON 兼容探测，
 # 否则明确阻断，而不是输出下游无法解析的 Monitor 记录。
 Assert-DshPowerShellRuntime | Out-Null
+
+# DSH ACP profile：未传默认 acp（既有调用兼容）；名字必须满足保守语法且不能是保留目录名。
+# 校验放在最前面：非法参数必须在解析 workspace / 创建任何 identity 或 Team Home 之前就被拒绝。
+# 与 src/server.mjs 的 normalizeDshProfile / src/cli.mjs 的 resolveDshProfile 使用同一规则。
+$profileName = $TeamProfile
+if (-not $profileName) { $profileName = 'acp' }
+$profileName = $profileName.Trim()
+if ($profileName -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$') {
+    throw "TeamProfile 非法：'$profileName'（只允许字母数字开头，后跟字母数字、点、下划线或连字符，最长 64 个字符）。"
+}
+if ($profileName.ToLowerInvariant() -eq 'node_modules') {
+    throw "TeamProfile 非法：'$profileName' 是保留的目录名，不能作为 DSH ACP profile。"
+}
+$profileArgs = @('--dsh-profile', $profileName)
+$profileArgument = " --dsh-profile `"$profileName`""
 
 $workspacePath = (Resolve-Path -LiteralPath $Workspace).Path
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -93,6 +112,34 @@ function Get-MonitorHealth {
     }
 }
 
+# 旧 record / 旧 health 没有 profile 字段：按历史值 acp 解释，因此只有请求 acp 时才可以复用。
+function Get-HealthProfile {
+    param($Health)
+    if ($null -eq $Health) { return 'acp' }
+    $value = [string]$Health.dshProfile
+    if ([string]::IsNullOrWhiteSpace($value)) { return 'acp' }
+    return $value
+}
+
+# 复用判定：workspace、Team DSH home、profile 三者都必须一致。
+function Test-MonitorHealthMatch {
+    param($Health)
+    if ($null -eq $Health) { return $false }
+    if ($Health.service -ne 'dsh-team-monitor') { return $false }
+    if ($Health.workspace -ne $workspacePath) { return $false }
+    if ($Health.dshHome -ne $dshHomePath) { return $false }
+    return ((Get-HealthProfile -Health $Health) -eq $profileName)
+}
+
+# record 里的 profile：缺失按历史 acp 解释；与请求不一致时绝不复用。
+function Test-MonitorRecordProfileMatch {
+    param($Record)
+    if ($null -eq $Record) { return ($profileName -eq 'acp') }
+    $value = [string]$Record.dsh_profile
+    $recordProfile = if ([string]::IsNullOrWhiteSpace($value)) { 'acp' } else { $value }
+    return ($recordProfile -eq $profileName)
+}
+
 function Test-LocalPortInUse {
     param([int]$CandidatePort)
     $client = New-Object System.Net.Sockets.TcpClient
@@ -143,6 +190,8 @@ function Write-PublicRecord {
         dsh_home = $dshHomePath
         # 一键同步来源（主 DSH Home）；未配置时为 null，只作为本地证据，不参与复用判定。
         dsh_user_home = $resolvedUserDshHome
+        # Monitor/bridge 使用的 DSH ACP profile（复用判定的一部分；旧 record 缺此字段按 acp）。
+        dsh_profile = $profileName
         install_id = $InstallId
         start_utc = $StartUtc
     }
@@ -170,6 +219,7 @@ function New-MonitorTokenRecord {
         workspace = $workspacePath
         dsh_home = $dshHomePath
         dsh_user_home = $resolvedUserDshHome
+        dsh_profile = $profileName
         install_id = $InstallId
         token_scheme = 'dpapi-current-user'
         access_token_protected = (Protect-DshMonitorToken -Token $PlainToken)
@@ -187,10 +237,9 @@ if (Test-Path -LiteralPath $recordPath -PathType Leaf) {
             $existingUri = [Uri]$existingRecord.url
             $existingPort = $existingUri.Port
             $existingHealth = Get-MonitorHealth -CandidatePort $existingPort
-            if ($existingHealth -and
-                $existingHealth.service -eq 'dsh-team-monitor' -and
-                $existingHealth.workspace -eq $workspacePath -and
-                $existingHealth.dshHome -eq $dshHomePath) {
+            # 复用必须 workspace + home + profile 三者一致；record 缺 profile 按历史 acp 解释，
+            # 因此旧 record 只在请求 acp 时可复用，profile 不同绝不复用错误的 monitor。
+            if ((Test-MonitorHealthMatch -Health $existingHealth) -and (Test-MonitorRecordProfileMatch -Record $existingRecord)) {
                 Open-MonitorPage -Url $existingRecord.url
                 $existingStart = if ($existingRecord.start_utc) { [string]$existingRecord.start_utc } else { [DateTimeOffset]::UtcNow.ToString('o') }
                 $existingPid = if ($existingRecord.pid) { [Nullable[int]]([int]$existingRecord.pid) } else { [Nullable[int]]$null }
@@ -211,9 +260,7 @@ if ($AutoPort) {
     for ($candidate = $Port; $candidate -le $lastPort; $candidate++) {
         $health = Get-MonitorHealth -CandidatePort $candidate
         if ($health) {
-            if ($health.service -eq 'dsh-team-monitor' -and
-                $health.workspace -eq $workspacePath -and
-                $health.dshHome -eq $dshHomePath) {
+            if (Test-MonitorHealthMatch -Health $health) {
                 $selectedPort = $candidate
                 $url = "http://127.0.0.1:$selectedPort"
                 Open-MonitorPage -Url $url
@@ -239,6 +286,9 @@ else {
         }
         if ($health.workspace -ne $workspacePath -or $health.dshHome -ne $dshHomePath) {
             throw "Port $selectedPort is occupied by a DSH monitor for another workspace or DSH home. Use -AutoPort or choose another port."
+        }
+        if ((Get-HealthProfile -Health $health) -ne $profileName) {
+            throw "Port $selectedPort is occupied by a DSH monitor for profile '$(Get-HealthProfile -Health $health)', but profile '$profileName' was requested. Use -AutoPort or choose another port."
         }
         $url = "http://127.0.0.1:$selectedPort"
         Open-MonitorPage -Url $url
@@ -268,7 +318,7 @@ if (-not $Background) {
     Write-DshAtomicText -Path $recordPath -Text ((ConvertTo-SafeJson -InputObject $foregroundRecord -Depth 6) + "`n") -RestrictToCurrentUser | Out-Null
     Open-MonitorPage -Url $url
     & $node.Source $serverPath '--workspace' $workspacePath '--port' $selectedPort '--token' $monitorToken `
-        '--dsh-home' $dshHomePath '--toolkit-install-id' $InstallId @userHomeArgs
+        '--dsh-home' $dshHomePath '--toolkit-install-id' $InstallId @profileArgs @userHomeArgs
     exit $LASTEXITCODE
 }
 
@@ -276,7 +326,7 @@ New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
 $monitorToken = New-MonitorToken
 $stdoutPath = Join-Path $artifactDir 'server-stdout.log'
 $stderrPath = Join-Path $artifactDir 'server-stderr.log'
-$argumentLine = "`"$serverPath`" --workspace `"$workspacePath`" --port $selectedPort --token $monitorToken --dsh-home `"$dshHomePath`" --toolkit-install-id `"$InstallId`"$userHomeArgument"
+$argumentLine = "`"$serverPath`" --workspace `"$workspacePath`" --port $selectedPort --token $monitorToken --dsh-home `"$dshHomePath`" --toolkit-install-id `"$InstallId`"$profileArgument$userHomeArgument"
 $process = Start-Process -FilePath $node.Source -ArgumentList $argumentLine -WorkingDirectory $workspacePath -WindowStyle Hidden -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -PassThru
 
 $ready = $false

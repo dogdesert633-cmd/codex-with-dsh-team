@@ -273,14 +273,14 @@ else {
 }
 Assert-UserDshHomeReadOnlySource -UserDshHome $resolvedUserHome -TeamDshHome $resolvedTeamHome | Out-Null
 
-# Team profile 必须在 owned Team Home 内被发现或显式配置；绝不使用静默默认 profile 名。
-$TeamProfile = Resolve-DshTeamProfile -Requested $TeamProfile -TeamDshHome $resolvedTeamHome `
-    -EnvironmentValue $env:CODEX_DSH_TEAM_PROFILE
-Write-Ok "Team profile = $TeamProfile"
-
-if (-not (Test-Path -LiteralPath (Join-Path $resolvedTeamHome "profiles\$TeamProfile\package.json") -PathType Leaf)) {
-    throw ("Team Home $resolvedTeamHome 缺少 profiles\{0}\package.json，DSH Team bridge 无法启动。`nTeam runtime 必须由安装器预置在 Toolkit-owned Team Home 中（例如 profiles\{0} 下已安装 DSH 依赖）；`n本工具不会把用户 DSH Home 当作 Team runtime，也不会在用户 DSH Home 里 patch/install。" -f $TeamProfile)
-}
+# Team profile：先证明 Team Home 属于本安装（owned），再 prepare（缺失时用官方 DSH 初始化
+# ACP profile），最后 resolve 出最终名字。安装器不再需要预置任何 profile。
+$profileSelection = Resolve-DshTeamProfileSelection -Requested $TeamProfile -TeamDshHome $resolvedTeamHome `
+    -InstallId $InstallId -EnvironmentValue $env:CODEX_DSH_TEAM_PROFILE `
+    -DshBinPath $bundledDshBin -NodePath $node.Source -Workspace $workspacePath
+$TeamProfile = $profileSelection.Name
+Write-Ok "Team profile = $TeamProfile (来源: $($profileSelection.Source), bundles: $(@($profileSelection.Bundles) -join ', '))"
+foreach ($profileNote in @($profileSelection.Notes)) { Write-Note $profileNote }
 $script:Report.TeamDshHome = $resolvedTeamHome
 Write-Ok "Team DSH home = $resolvedTeamHome (Toolkit-owned, marker 已验证)"
 
@@ -303,7 +303,8 @@ if ($SkipSync) {
 else {
     Write-Step '同步 provider / model / auth 到 Team 运行时'
     $syncResult = Invoke-DshTeamConfigSync -UserDshHome $resolvedUserHome -TeamDshHome $resolvedTeamHome `
-        -TeamProfile $TeamProfile -InstallId $InstallId -TeamHomeRoot $TeamHomeRoot -Workspace $workspacePath
+        -TeamProfile $TeamProfile -InstallId $InstallId -TeamHomeRoot $TeamHomeRoot -Workspace $workspacePath `
+        -DshBinPath $bundledDshBin -NodePath $node.Source
     $script:Report.Provider = $syncResult.Provider
     $script:Report.Model = $syncResult.Model
     $script:Report.SyncChanges = @($syncResult.Changed)
@@ -443,6 +444,9 @@ $monitorArgs = @{
     DshHome     = $resolvedTeamHome
     UserDshHome = $resolvedUserHome
     InstallId   = $InstallId
+    # 最终选定的 Team profile 必须一路传到 Monitor（--dsh-profile），保证 bridge 子进程、
+    # Task/permission 证据与本次启动用的是同一个 profile。
+    TeamProfile = $TeamProfile
 }
 if ($TeamHomeRoot) { $monitorArgs['TeamHomeRoot'] = $TeamHomeRoot }
 if ($InstallManifestPath) { $monitorArgs['InstallManifestPath'] = $InstallManifestPath }

@@ -1,0 +1,6 @@
+interface:
+  display_name: "DSH 角色与能力边界"
+  short_description: "定义 DSH 适合与禁止的任务边界、分派限制与恢复行为"
+  default_prompt: "使用 $dsh-role-boundaries 判断这项工作是否适合交给 DSH：绘图、图像生成/编辑、识图、OCR、截图分析、GUI 视觉判断/验收以及长时间等待都留在 Codex 侧；适合的部分按边界规则派发，并附带上下文、审查、权限、恢复与安全限制。"
+policy:
+  allow_implicit_invocation: true

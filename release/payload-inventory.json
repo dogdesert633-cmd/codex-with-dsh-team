@@ -13,82 +13,43 @@
     "neverInstalled": "payload test files, inventory/build metadata, credentials, ownership markers, runtime state, sessions, artifacts, node_modules",
     "packagedOnlyNote": "releaseDevelopmentPaths ships inside the release package but is excluded from release-manifest.json files (the install set)"
   },
-  "fileCount": 50,
+  "fileCount": 37,
   "files": [
     {
-      "path": ".agents/skills/codex-dsh-team/agents/openai.yaml"
+      "path": ".agents/skills/codex-team/agents/openai.yaml"
     },
     {
-      "path": ".agents/skills/codex-dsh-team/assets/AGENTS_DSH_SECTION.md"
+      "path": ".agents/skills/codex-team/assets/WORK_PACKAGE.md"
     },
     {
-      "path": ".agents/skills/codex-dsh-team/assets/metrics.json"
+      "path": ".agents/skills/codex-team/references/roles.md"
     },
     {
-      "path": ".agents/skills/codex-dsh-team/assets/REVIEW_CONTRACT.md"
+      "path": ".agents/skills/codex-team/references/workflow.md"
     },
     {
-      "path": ".agents/skills/codex-dsh-team/assets/RUN_REPORT.md"
+      "path": ".agents/skills/codex-team/SKILL.md"
     },
     {
-      "path": ".agents/skills/codex-dsh-team/assets/WORK_PACKAGE.md"
+      "path": ".agents/skills/dsh-role-boundaries/agents/openai.yaml"
     },
     {
-      "path": ".agents/skills/codex-dsh-team/profiles/default.yaml"
+      "path": ".agents/skills/dsh-role-boundaries/assets/WORK_PACKAGE.md"
     },
     {
-      "path": ".agents/skills/codex-dsh-team/references/agent-lifecycle.md"
+      "path": ".agents/skills/dsh-role-boundaries/references/dsh-execution-policy.md"
     },
     {
-      "path": ".agents/skills/codex-dsh-team/references/dsh-context-efficiency.md"
+      "path": ".agents/skills/dsh-role-boundaries/references/dsh-recovery-and-fallback.md"
     },
     {
-      "path": ".agents/skills/codex-dsh-team/references/dsh-full-access-permissions.md"
+      "path": ".agents/skills/dsh-role-boundaries/references/model-validation-and-no-hash.md"
     },
     {
-      "path": ".agents/skills/codex-dsh-team/references/dsh-recovery-and-fallback.md"
+      "path": ".agents/skills/dsh-role-boundaries/references/task-capability-routing.md"
     },
     {
-      "path": ".agents/skills/codex-dsh-team/references/dsh-stop-and-return.md"
-    },
-    {
-      "path": ".agents/skills/codex-dsh-team/references/evidence-and-recovery.md"
-    },
-    {
-      "path": ".agents/skills/codex-dsh-team/references/model-validation-and-no-hash.md"
-    },
-    {
-      "path": ".agents/skills/codex-dsh-team/references/task-capability-routing.md"
-    },
-    {
-      "path": ".agents/skills/codex-dsh-team/references/team-routing.md"
-    },
-    {
-      "path": ".agents/skills/codex-dsh-team/references/team-task-scheduler.md"
-    },
-    {
-      "path": ".agents/skills/codex-dsh-team/roles/advisor.md"
-    },
-    {
-      "path": ".agents/skills/codex-dsh-team/roles/code_explorer.md"
-    },
-    {
-      "path": ".agents/skills/codex-dsh-team/roles/code_reviewer.md"
-    },
-    {
-      "path": ".agents/skills/codex-dsh-team/roles/coder.md"
-    },
-    {
-      "path": ".agents/skills/codex-dsh-team/roles/coordinator.md"
-    },
-    {
-      "path": ".agents/skills/codex-dsh-team/roles/progress_recorder.md"
-    },
-    {
-      "path": ".agents/skills/codex-dsh-team/roles/tester.md"
-    },
-    {
-      "path": ".agents/skills/codex-dsh-team/SKILL.md"
+      "path": ".agents/skills/dsh-role-boundaries/SKILL.md"
     },
     {
       "path": ".agents/skills/mcp-to-dsh/.gitignore"
@@ -97,10 +58,10 @@
       "path": ".agents/skills/mcp-to-dsh/agents/openai.yaml"
     },
     {
-      "path": ".agents/skills/mcp-to-dsh/package-lock.json"
+      "path": ".agents/skills/mcp-to-dsh/package.json"
     },
     {
-      "path": ".agents/skills/mcp-to-dsh/package.json"
+      "path": ".agents/skills/mcp-to-dsh/package-lock.json"
     },
     {
       "path": ".agents/skills/mcp-to-dsh/public/app.js"
@@ -168,9 +129,11 @@
   ],
   "releaseDevelopmentPaths": [
     ".agents/skills/mcp-to-dsh/test/config-sync.test.mjs",
+    ".agents/skills/mcp-to-dsh/test/first-start.test.mjs",
     ".agents/skills/mcp-to-dsh/test/generalization.test.mjs",
     ".agents/skills/mcp-to-dsh/test/launcher-security.test.mjs",
     ".agents/skills/mcp-to-dsh/test/model-settings.test.mjs",
+    ".agents/skills/mcp-to-dsh/test/profile-routing.test.mjs",
     ".agents/skills/mcp-to-dsh/test/redaction-e2e.test.mjs",
     ".agents/skills/mcp-to-dsh/test/security.test.mjs",
     ".agents/skills/mcp-to-dsh/test/server.test.mjs",

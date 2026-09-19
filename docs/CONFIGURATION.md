@@ -165,13 +165,59 @@ Rules enforced by the engine:
 The **user DSH Home is read-only**: the toolkit never patches, migrates, cleans up,
 overwrites or reconfigures it.
 
+## ACP profile (runtime, inside the owned Team Home)
+
+The ACP profile is a **launch configuration / module declaration** for DSH: `profiles/<name>/`
+holds a `package.json` declaring the ACP bundles DSH loads. It is not a personal profile, account,
+provider or model choice, and it is not installed by the installer — it is prepared at runtime
+inside the owned Team Home (never inside the user DSH Home).
+
+Resolution order:
+
+1. `-TeamProfile <name>` (launcher / Monitor argument);
+2. `CODEX_DSH_TEAM_PROFILE`;
+3. the one optional profile already present in the owned Team Home (a directory with a
+   `package.json`; the built-in helper templates `web`/`headless`/`sdk`/`sdk-minimal` and
+   `node_modules` are not counted);
+4. otherwise the default `acp`, which is then prepared automatically.
+
+Only **more than one** existing optional profile is an ambiguity: nothing is guessed, and you are
+asked to choose with `-TeamProfile` / `CODEX_DSH_TEAM_PROFILE`. A custom name is created
+with the installed DSH's own template (`dsh --from-default-profile acp`). A profile directory, its
+`package.json` and the plugins inside it are never replaced, moved or deleted, and a half-finished
+directory (no `package.json`, or a `package.json` without a non-empty `dsh.profile.bundles`) is
+refused rather than adopted. The configuration sync writes exactly one file inside the **selected**
+profile — `profiles/<name>/cordis.patch.yml`, with a timestamped `.bak` of the previous content —
+to pin that profile to the configured provider/model. The DSH
+built-in templates `web`, `headless` and `sdk` are **not** ACP entries and are refused as the Team
+profile; so is the reserved name `node_modules`.
+
+One name travels the whole chain:
+
+| Hop | Field |
+| --- | --- |
+| Launcher (`start_dsh_team.cmd`, `start_dsh_monitor.ps1`) | `-TeamProfile` |
+| Monitor process | `--dsh-profile <name>` |
+| `GET /api/health` | `dshProfile` |
+| Local Monitor record (`artifacts/dsh-monitor/server.json`) | `dsh_profile` |
+| Bridge child environment | `CODEX_DSH_ACP_PROFILE` |
+| One-click configuration sync child | `-TeamProfile <same name>` |
+
+Monitor reuse requires **workspace, Team Home and profile** to match. A record or health projection
+written by an older version has no profile field; it is read as the historical `acp`, so it can only
+be reused when `acp` is what you are asking for. A different profile on the same port is reported
+instead of being reused.
+
 ## Confidentiality rules applied to every output
 
 - Deny-by-default path policy: `.env*`, credential stores, `id_rsa*`, `*.key|*.pem|*.pfx|*.p12|*.ppk|*.kdbx|*.jks`,
   `settings.yaml`, `secrets/`, `tokens/`, `cookies`, `sessions/`, `*.log`, `*.jsonl`,
   `.git/`, `.dsh/`, `node_modules/`, `artifacts/` and browser profiles are refused even if a
   manifest claims them.
-- Plans, journals, backups and logs never contain file contents or credential values.
+- Plans, journals and logs carry path/status metadata only — no file contents. Transaction
+  `backup/` and `quarantine/` copies and the `pristine/` baselines are **real byte copies of
+  managed files** (kept for rollback, restore and ownership comparison), and the owned Team Home
+  may hold a credential copy. See [SECURITY.md](SECURITY.md).
 - Secret-shaped path segments are rendered as `<redacted>`, and bearer/basic tokens, JWTs,
   API keys, private key blocks and `key = "value"` pairs are redacted from every message.
 - The journal stores relative managed paths only: it never persists the absolute personal path,
@@ -185,12 +231,12 @@ overwrites or reconfigures it.
 {
   "schema": "codex-dsh-team-toolkit/release-manifest/v1",
   "name": "codex-dsh-team-toolkit",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "stateDirectory": ".codex-dsh-team-toolkit",
   "fileCount": 2,
   "files": [
-    { "path": ".agents/skills/codex-dsh-team/SKILL.md",
-      "source": "payload/.agents/skills/codex-dsh-team/SKILL.md" }
+    { "path": ".agents/skills/dsh-role-boundaries/SKILL.md",
+      "source": "payload/.agents/skills/dsh-role-boundaries/SKILL.md" }
   ]
 }
 ```
